@@ -1,19 +1,10 @@
-# :earth_americas: GDP dashboard template
+# Simple Time-Series Predictor (Streamlit)
+Minimal Streamlit app to upload CSV/XLSX and generate a small baseline forecast safely.
 
-A simple Streamlit app showing the GDP of different countries in the world.
+## Run locally
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
+pip install -r requirements-dev.txt
+streamlit run streamlit_app.py
+```
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://gdp-dashboard-template.streamlit.app/)
-
-### How to run it on your own machine
-
-1. Install the requirements
-
-   ```
-   $ pip install -r requirements.txt
-   ```
-
-2. Run the app
-
-   ```
-   $ streamlit run streamlit_app.py
-   ```
