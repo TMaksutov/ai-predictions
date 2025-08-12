@@ -1,6 +1,8 @@
+import os, sys, io
 import pandas as pd, numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from ts_core import forecast_linear_safe, load_table, DataError
-import io
 
 def _make_df(n=20, start="2023-01-01"):
     dates = pd.date_range(start=start, periods=n, freq="D")

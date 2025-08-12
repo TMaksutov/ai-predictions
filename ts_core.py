@@ -51,8 +51,6 @@ def _prepare(df: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame:
     s[target_col] = pd.to_numeric(s[target_col], errors="coerce")
     s = s[[date_col, target_col]].dropna().sort_values(date_col)
     s = s[~s[date_col].duplicated(keep="last")]
-    if len(s) < 3:
-        raise DataError("Not enough clean rows (need ≥3).")
     return s
 
 def _infer_offset(dates: pd.Series):
@@ -89,7 +87,7 @@ def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horiz
         })
 
     try:
-        if horizon < 1 or horizon > 10000 or not np.isfinite(y).all():
+        if n < 3 or horizon < 1 or horizon > 10000 or not np.isfinite(y).all():
             raise DataError("Invalid horizon or values.")
         model = LinearRegression().fit(X, y)
         fut = np.arange(n, n + horizon).reshape(-1, 1)
