@@ -10,6 +10,19 @@ st.write("Upload CSV/XLSX, choose columns, and get a small baseline forecast wit
 DATA_DIR = Path(__file__).parent / "test_files"
 
 with st.sidebar:
+    if "show_examples" not in st.session_state:
+        st.session_state.show_examples = False
+    if st.button("Download examples"):
+        st.session_state.show_examples = not st.session_state.show_examples
+    if st.session_state.show_examples:
+        example_files = sorted(DATA_DIR.glob("*"))
+        for example in example_files:
+            st.download_button(
+                label=example.name,
+                data=example.read_bytes(),
+                file_name=example.name,
+                key=f"example-{example.name}"
+            )
     uploaded = st.file_uploader("CSV or Excel (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"])
     horizon = st.number_input("Forecast horizon (steps)", min_value=1, max_value=1000, value=12)
 
