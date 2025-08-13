@@ -21,13 +21,23 @@ def load_table(uploaded_file) -> pd.DataFrame:
     name = (getattr(uploaded_file, "name", "") or "").lower()
     try:
         if name.endswith(".xlsx"):
-            df = pd.read_excel(uploaded_file, engine="openpyxl")
+            read = lambda f, **k: pd.read_excel(f, engine="openpyxl", **k)
         elif name.endswith(".xls"):
-            df = pd.read_excel(uploaded_file, engine="xlrd")
+            read = lambda f, **k: pd.read_excel(f, engine="xlrd", **k)
         else:
+            read = lambda f, **k: pd.read_csv(f, sep=None, engine="python",
+                                             on_bad_lines="skip", **k)
+        uploaded_file.seek(0)
+        df = read(uploaded_file)
+        cols = pd.Index(df.columns)
+        def _looks_like_data(vals):
+            num = pd.to_numeric(vals, errors="coerce").notna().sum()
+            dt = pd.to_datetime(vals, errors="coerce").notna().sum()
+            return (num + dt) / len(vals) > 0.5
+        if list(cols) == list(range(df.shape[1])) or _looks_like_data(cols):
             uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, sep=None, engine="python",
-                             on_bad_lines="skip")
+            df = read(uploaded_file, header=None)
+            df.columns = [f"col{i}" for i in range(df.shape[1])]
     except Exception as e:
         raise DataError(f"Failed to read file: {e}")
     if df is None or df.empty:
@@ -138,4 +148,59 @@ def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horiz
         })
     except Exception:
         return _naive()
+
+
+def train_regression_models(df: pd.DataFrame, target_col: str):
+    """Auto-detect feature types, encode and fit simple regressors."""
+    if target_col not in df.columns:
+        raise DataError("Target column not found.")
+    s = df.copy()
+    y = pd.to_numeric(s[target_col], errors="coerce")
+    X = s.drop(columns=[target_col])
+    for c in list(X.columns):
+        col = X[c]
+        if col.dtype == object:
+            low = col.astype(str).str.strip().str.lower()
+            bool_map = {"true": 1, "false": 0, "yes": 1, "no": 0}
+            if low.isin(bool_map).mean() > 0.8:
+                X[c] = low.map(bool_map)
+            else:
+                dt = pd.to_datetime(col, errors="coerce")
+                if dt.notna().sum() >= max(3, int(0.6 * len(dt))):
+                    X.drop(columns=[c], inplace=True)
+                    X[f"{c}_year"] = dt.dt.year
+                    X[f"{c}_month"] = dt.dt.month
+                    X[f"{c}_day"] = dt.dt.day
+                    X[f"{c}_dow"] = dt.dt.dayofweek
+                    X[f"{c}_hour"] = dt.dt.hour
+                else:
+                    X[c] = col.astype("category")
+        else:
+            X[c] = pd.to_numeric(col, errors="coerce")
+    X = pd.get_dummies(X, dummy_na=True)
+    data = pd.concat([X, y], axis=1).dropna(subset=[target_col])
+    y = data[target_col]
+    X = data.drop(columns=[target_col]).fillna(data.median())
+    split = int(len(X) * 0.7)
+    X_train, X_test = X.iloc[:split], X.iloc[split:]
+    y_train, y_test = y.iloc[:split], y.iloc[split:]
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    models = {"RandomForest": RandomForestRegressor(random_state=0)}
+    try:
+        from lightgbm import LGBMRegressor
+        models["LightGBM"] = LGBMRegressor(random_state=0)
+    except Exception:
+        pass
+    out = {}
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        preds = model.predict(X_test)
+        mse = mean_squared_error(y_test, preds)
+        out[name] = {
+            "MAE": float(mean_absolute_error(y_test, preds)),
+            "RMSE": float(mse ** 0.5),
+            "R2": float(r2_score(y_test, preds)),
+        }
+    return out
 
