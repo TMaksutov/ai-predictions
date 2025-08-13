@@ -20,5 +20,7 @@ Sample datasets in `test_files` now include multi-feature examples like `weekly_
 
 ## Maintainer Notes
 
+No external CI is configured. Run `pytest` locally before committing.
+
 When repository instructions change, update both `AGENTS.md` and `README.md` to keep guidance in sync.
 
