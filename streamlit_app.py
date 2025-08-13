@@ -3,6 +3,8 @@ import streamlit as st
 import random
 from pathlib import Path
 import subprocess
+import io
+import zipfile
 from ts_core import (
     load_table,
     infer_date_and_target,
@@ -12,46 +14,55 @@ from ts_core import (
 )
 
 
-def get_deploy_info():
-    """Return PR number and commit datetime without timezone."""
+def get_deploy_time():
+    """Return commit datetime (truncated to minutes) without timezone."""
     try:
-        version = os.getenv("PR_NUMBER", "unknown")
         deploy_time = subprocess.check_output(
             [
                 "git",
                 "show",
                 "-s",
                 "--format=%cd",
-                "--date=format:%Y-%m-%d %H:%M:%S",
+                "--date=format:%Y-%m-%d %H:%M",
                 "HEAD",
             ]
         ).decode().strip()
     except Exception:
         deploy_time = "unknown"
-    return version, deploy_time
+    return deploy_time
 
-st.set_page_config(page_title="Simple Time-Series Predictor", page_icon="⏱️", layout="wide")
-st.title("⏱️ Simple Time-Series Predictor (Baseline)")
+st.set_page_config(page_title="Simple Time-Series Predictor", layout="wide")
+st.header("Simple Time-Series Predictor (Baseline)")
 st.write("Upload CSV/XLSX, choose columns, and get a small baseline forecast with strong safety checks.")
 
 DATA_DIR = Path(__file__).parent / "test_files"
 
 with st.sidebar:
-    if "show_examples" not in st.session_state:
-        st.session_state.show_examples = False
-    if st.button("Download examples"):
-        st.session_state.show_examples = not st.session_state.show_examples
-    if st.session_state.show_examples:
-        example_files = sorted(DATA_DIR.glob("*"))
+    example_files = sorted(DATA_DIR.glob("*"))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
         for example in example_files:
-            st.download_button(
-                label=example.name,
-                data=example.read_bytes(),
-                file_name=example.name,
-                key=f"example-{example.name}"
-            )
-    uploaded = st.file_uploader("CSV or Excel (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"])
-    horizon = st.number_input("Forecast horizon (steps)", min_value=1, max_value=1000, value=12)
+            zf.write(example, arcname=example.name)
+    buffer.seek(0)
+    st.download_button(
+        "Download examples",
+        buffer.getvalue(),
+        "examples.zip",
+    )
+    uploaded = st.file_uploader(
+        "CSV or Excel (.csv, .xlsx, .xls)",
+        type=["csv", "xlsx", "xls"],
+    )
+    horizon = st.number_input(
+        "Forecast horizon (steps)",
+        min_value=1,
+        max_value=1000,
+        value=12,
+    )
+
+if uploaded is not None and uploaded.size > 10 * 1024 * 1024:
+    st.error("File too large. Limit is 10 MB.")
+    st.stop()
 
 if uploaded is None:
     sample_files = list(DATA_DIR.glob("*.csv"))
@@ -98,9 +109,8 @@ except Exception as e:
 st.caption("Baseline uses scikit-learn LinearRegression with a safe fallback to last value if modeling fails.")
 
 
-version, deploy_time = get_deploy_info()
+deploy_time = get_deploy_time()
 st.markdown(
-    f"<div style='position: fixed; bottom: 0; left: 0; font-size:0.75rem; color: gray;'>"
-    f"Version: {version}<br/>Last deploy: {deploy_time}</div>",
+    f"<div style='position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); font-size:0.75rem; color: gray;'>Deploy: {deploy_time}</div>",
     unsafe_allow_html=True,
 )
