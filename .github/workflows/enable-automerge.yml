@@ -1,0 +1,20 @@
+name: Enable auto-merge on label
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge when labeled 'automerge'
+        if: contains(join(github.event.pull_request.labels.*.name, ','), 'automerge')
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          merge-method: squash   # Options: merge, squash, rebase
+          pull-request-number: ${{ github.event.pull_request.number }}
