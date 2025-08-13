@@ -61,9 +61,14 @@ def _infer_offset(dates: pd.Series):
     except Exception:
         pass
     diffs = dates.diff().dropna()
-    if len(diffs) and hasattr(diffs.iloc[0], "days"):
-        days = int(max(1, diffs.median().days))
-        return pd.DateOffset(days=days)
+    if len(diffs):
+        med = diffs.median()
+        try:
+            return pd.tseries.frequencies.to_offset(med)
+        except Exception:
+            if hasattr(med, "days"):
+                days = int(max(1, med.days))
+                return pd.DateOffset(days=days)
     return pd.DateOffset(days=1)
 
 def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horizon: int) -> pd.DataFrame:
