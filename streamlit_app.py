@@ -9,9 +9,12 @@ st.write("Upload CSV/XLSX, choose columns, and get a small baseline forecast wit
 
 DATA_DIR = Path(__file__).parent / "test_files"
 
-with st.sidebar:
-    uploaded = st.file_uploader("CSV or Excel (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"])
-    horizon = st.number_input("Forecast horizon (steps)", min_value=1, max_value=1000, value=12)
+uploaded = st.sidebar.file_uploader(
+    "CSV or Excel (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"]
+)
+horizon = st.sidebar.number_input(
+    "Forecast horizon (steps)", min_value=1, max_value=1000, value=12
+)
 
 if uploaded is None:
     sample_files = list(DATA_DIR.glob("*.csv"))
@@ -26,17 +29,25 @@ else:
     try:
         df = load_table(uploaded)
     except DataError as e:
-        st.error(str(e)); st.stop()
+        st.error(str(e))
+        st.stop()
 
-st.subheader("Preview"); st.dataframe(df.head(20))
+st.subheader("Preview")
+st.dataframe(df.head(20))
 auto_date, auto_target = infer_date_and_target(df)
 
-st.subheader("Select columns")
-date_col = st.selectbox("Date/time column", df.columns.tolist(),
-                        index=(df.columns.get_loc(auto_date) if auto_date in df.columns else 0))
+st.sidebar.subheader("Select columns")
+date_col = st.sidebar.selectbox(
+    "Date/time column",
+    df.columns.tolist(),
+    index=(df.columns.get_loc(auto_date) if auto_date in df.columns else 0),
+)
 candidates = [c for c in df.columns if c != date_col]
-target_col = st.selectbox("Target (numeric)", candidates,
-            index=(candidates.index(auto_target) if auto_target in candidates else 0))
+target_col = st.sidebar.selectbox(
+    "Target (numeric)",
+    candidates,
+    index=(candidates.index(auto_target) if auto_target in candidates else 0),
+)
 
 st.caption(f"Detected interval: {detect_interval(df[date_col])}")
 
