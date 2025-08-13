@@ -44,15 +44,19 @@ with st.sidebar:
         for example in example_files:
             zf.write(example, arcname=example.name)
     buffer.seek(0)
-    st.download_button(
-        "Download examples",
-        buffer.getvalue(),
-        "examples.zip",
-    )
-    uploaded = st.file_uploader(
-        "CSV or Excel (.csv, .xlsx, .xls)",
-        type=["csv", "xlsx", "xls"],
-    )
+    upload_col, example_col = st.columns([3, 1])
+    with upload_col:
+        uploaded = st.file_uploader(
+            "CSV or Excel (.csv, .xlsx, .xls) (max 10 MB)",
+            type=["csv", "xlsx", "xls"],
+        )
+    with example_col:
+        st.download_button(
+            "Examples",
+            buffer.getvalue(),
+            "examples.zip",
+        )
+    st.caption("Max upload size: 10 MB")
     horizon = st.number_input(
         "Forecast horizon (steps)",
         min_value=1,
@@ -67,10 +71,12 @@ if uploaded is not None and uploaded.size > 10 * 1024 * 1024:
 if uploaded is None:
     sample_files = list(DATA_DIR.glob("*.csv"))
     if not sample_files:
-        st.info("Upload a file to begin.")
+        with st.sidebar:
+            st.info("Upload a file to begin.")
         st.stop()
     choice = random.choice(sample_files)
-    st.info(f"Using sample data: {choice.name}")
+    with st.sidebar:
+        st.info(f"Using sample data: {choice.name}")
     with choice.open("rb") as f:
         df = load_table(f)
 else:
@@ -83,14 +89,20 @@ with st.expander("Preview"):
     st.dataframe(df.head(20))
 auto_date, auto_target = infer_date_and_target(df)
 
-st.subheader("Select columns")
-date_col = st.selectbox("Date/time column", df.columns.tolist(),
-                        index=(df.columns.get_loc(auto_date) if auto_date in df.columns else 0))
-candidates = [c for c in df.columns if c != date_col]
-target_col = st.selectbox("Target (numeric)", candidates,
-            index=(candidates.index(auto_target) if auto_target in candidates else 0))
-
-st.caption(f"Detected interval: {detect_interval(df[date_col])}")
+with st.sidebar:
+    st.subheader("Select columns")
+    date_col = st.selectbox(
+        "Date/time column",
+        df.columns.tolist(),
+        index=(df.columns.get_loc(auto_date) if auto_date in df.columns else 0),
+    )
+    candidates = [c for c in df.columns if c != date_col]
+    target_col = st.selectbox(
+        "Target (numeric)",
+        candidates,
+        index=(candidates.index(auto_target) if auto_target in candidates else 0),
+    )
+    st.caption(f"Detected interval: {detect_interval(df[date_col])}")
 
 try:
     out = forecast_linear_safe(df, date_col, target_col, int(horizon))
