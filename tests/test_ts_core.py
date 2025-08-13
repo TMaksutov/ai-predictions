@@ -3,7 +3,7 @@ import pandas as pd, numpy as np
 import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from ts_core import forecast_linear_safe, load_table, detect_interval, DataError
+from ts_core import forecast_linear_safe, load_table, detect_interval, DataError, train_regression_models
 
 def _make_df(n=20, start="2023-01-01"):
     dates = pd.date_range(start=start, periods=n, freq="D")
@@ -28,6 +28,12 @@ def test_load_table_csv():
     f = io.BytesIO(csv); f.name = "demo.csv"
     df = load_table(f)
     assert not df.empty
+
+def test_load_table_no_header():
+    csv = _make_df().to_csv(index=False, header=False).encode("utf-8")
+    f = io.BytesIO(csv); f.name = "demo.csv"
+    df = load_table(f)
+    assert list(df.columns) == ["col0", "col1"]
 
 def test_load_table_semicolon_and_xls():
     df0 = _make_df()
@@ -59,4 +65,17 @@ def test_detect_interval():
     df = _make_df()
     interval = detect_interval(df['date'])
     assert 'D' in interval
+
+def test_train_regression_models():
+    df = pd.DataFrame({
+        "when": ["2024/01/01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+        "num": [1, 2, 3, 4, 5],
+        "cat": ["a", "b", "a", "b", "a"],
+        "flag": ["yes", "no", "yes", "no", "yes"],
+        "y": [1.0, 1.2, 1.1, 1.3, 1.4],
+    })
+    out = train_regression_models(df, "y")
+    assert "RandomForest" in out
+    m = out["RandomForest"]
+    assert set(m) == {"MAE", "RMSE", "R2"}
 
