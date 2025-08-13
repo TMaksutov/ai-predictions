@@ -28,7 +28,8 @@ else:
     except DataError as e:
         st.error(str(e)); st.stop()
 
-st.subheader("Preview"); st.dataframe(df.head(20))
+with st.expander("Preview"):
+    st.dataframe(df.head(20))
 auto_date, auto_target = infer_date_and_target(df)
 
 st.subheader("Select columns")
