@@ -14,3 +14,11 @@ The app automatically cleans uploaded tables and infers the time interval (day, 
 
 Use `train_regression_models(df, target)` to fit models on any tabular data. Columns are parsed for dates, booleans and categories, missing values are handled, and the last 30% of rows are used for evaluation. LightGBM will be used if installed.
 
+## Test Files
+
+Sample datasets in `test_files` now include multi-feature examples like `weekly_multi.csv` and `minute_multi.csv` to cover different time intervals.
+
+## Maintainer Notes
+
+When repository instructions change, update both `AGENTS.md` and `README.md` to keep guidance in sync.
+
