@@ -1,23 +1,33 @@
 import streamlit as st
 import pandas as pd
+import random
+from pathlib import Path
 from ts_core import load_table, infer_date_and_target, forecast_linear_safe, DataError, detect_interval
 
 st.set_page_config(page_title="Simple Time-Series Predictor", page_icon="⏱️", layout="wide")
 st.title("⏱️ Simple Time-Series Predictor (Baseline)")
 st.write("Upload CSV/XLSX, choose columns, and get a small baseline forecast with strong safety checks.")
 
+DATA_DIR = Path(__file__).parent / "test_files"
+
 with st.sidebar:
     uploaded = st.file_uploader("CSV or Excel (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"])
     horizon = st.number_input("Forecast horizon (steps)", min_value=1, max_value=1000, value=12)
 
 if uploaded is None:
-    st.info("Upload a file to begin.")
-    st.stop()
-
-try:
-    df = load_table(uploaded)
-except DataError as e:
-    st.error(str(e)); st.stop()
+    sample_files = list(DATA_DIR.glob("*.csv"))
+    if not sample_files:
+        st.info("Upload a file to begin.")
+        st.stop()
+    choice = random.choice(sample_files)
+    st.info(f"Using sample data: {choice.name}")
+    with choice.open("rb") as f:
+        df = load_table(f)
+else:
+    try:
+        df = load_table(uploaded)
+    except DataError as e:
+        st.error(str(e)); st.stop()
 
 st.subheader("Preview"); st.dataframe(df.head(20))
 auto_date, auto_target = infer_date_and_target(df)
