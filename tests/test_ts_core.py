@@ -28,3 +28,12 @@ def test_load_table_csv():
     df = load_table(f)
     assert not df.empty
 
+def test_subday_frequency_offset():
+    df = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=2, freq="h"),
+        "value": [1, 2],
+    })
+    out = forecast_linear_safe(df, "date", "value", horizon=2)
+    diffs = out["date"].diff().dropna()
+    assert (diffs == pd.Timedelta(hours=1)).all()
+
