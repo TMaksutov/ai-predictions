@@ -1,21 +1,32 @@
+import os
 import streamlit as st
 import random
 from pathlib import Path
 import subprocess
-from ts_core import load_table, infer_date_and_target, forecast_linear_safe, DataError, detect_interval
+from ts_core import (
+    load_table,
+    infer_date_and_target,
+    forecast_linear_safe,
+    DataError,
+    detect_interval,
+)
 
 
 def get_deploy_info():
-    """Return short git commit hash and commit datetime."""
+    """Return PR number and commit datetime without timezone."""
     try:
-        version = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"]
-        ).decode().strip()
+        version = os.getenv("PR_NUMBER", "unknown")
         deploy_time = subprocess.check_output(
-            ["git", "show", "-s", "--format=%ci", "HEAD"]
+            [
+                "git",
+                "show",
+                "-s",
+                "--format=%cd",
+                "--date=format:%Y-%m-%d %H:%M:%S",
+                "HEAD",
+            ]
         ).decode().strip()
     except Exception:
-        version = "unknown"
         deploy_time = "unknown"
     return version, deploy_time
 
@@ -89,7 +100,7 @@ st.caption("Baseline uses scikit-learn LinearRegression with a safe fallback to 
 
 version, deploy_time = get_deploy_info()
 st.markdown(
-    f"<div style='position: fixed; bottom: 0; right: 0; font-size:0.75rem; color: gray;'>"
+    f"<div style='position: fixed; bottom: 0; left: 0; font-size:0.75rem; color: gray;'>"
     f"Version: {version}<br/>Last deploy: {deploy_time}</div>",
     unsafe_allow_html=True,
 )
