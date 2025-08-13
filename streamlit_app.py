@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from ts_core import load_table, infer_date_and_target, forecast_linear_safe, DataError
+from ts_core import load_table, infer_date_and_target, forecast_linear_safe, DataError, detect_interval
 
 st.set_page_config(page_title="Simple Time-Series Predictor", page_icon="⏱️", layout="wide")
 st.title("⏱️ Simple Time-Series Predictor (Baseline)")
@@ -27,7 +27,9 @@ date_col = st.selectbox("Date/time column", df.columns.tolist(),
                         index=(df.columns.get_loc(auto_date) if auto_date in df.columns else 0))
 candidates = [c for c in df.columns if c != date_col]
 target_col = st.selectbox("Target (numeric)", candidates,
-                          index=(candidates.index(auto_target) if auto_target in candidates else 0))
+            index=(candidates.index(auto_target) if auto_target in candidates else 0))
+
+st.caption(f"Detected interval: {detect_interval(df[date_col])}")
 
 if st.button("Run baseline forecast"):
     try:
@@ -44,4 +46,4 @@ if st.button("Run baseline forecast"):
     except Exception as e:
         st.error(f"Unexpected error: {e}")
 
-st.caption("Baseline uses scikit-learn LinearRegression with a safe fallback to last value if modeling fails. For .xls, please upload .xlsx/.csv.")
+st.caption("Baseline uses scikit-learn LinearRegression with a safe fallback to last value if modeling fails.")

@@ -3,34 +3,39 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+import re
 
 class DataError(ValueError):
     """Raised for user-facing, recoverable data errors."""
 
+_SPACE_RE = re.compile(r"\s+")
+
+def _clean_string(s: str) -> str:
+    s = s.strip().strip("\ufeff").strip('"').strip("'")
+    return _SPACE_RE.sub(" ", s)
+
 def load_table(uploaded_file) -> pd.DataFrame:
-    """
-    Load CSV or Excel from a file-like object (Streamlit uploader).
-    Supports .csv and .xlsx. For legacy .xls, instruct user to convert to .xlsx.
-    """
+    """Load user data from CSV/Excel or generic delimited text safely."""
     if uploaded_file is None:
         raise DataError("No file provided.")
     name = (getattr(uploaded_file, "name", "") or "").lower()
     try:
-        if name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        elif name.endswith(".xlsx"):
+        if name.endswith(".xlsx"):
             df = pd.read_excel(uploaded_file, engine="openpyxl")
         elif name.endswith(".xls"):
-            raise DataError("Legacy .xls not supported. Please upload .xlsx or .csv.")
+            df = pd.read_excel(uploaded_file, engine="xlrd")
         else:
-            # Try CSV as fallback if extension missing
             uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file)
+            df = pd.read_csv(uploaded_file, sep=None, engine="python",
+                             on_bad_lines="skip")
     except Exception as e:
         raise DataError(f"Failed to read file: {e}")
     if df is None or df.empty:
         raise DataError("File is empty.")
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [_clean_string(str(c)) for c in df.columns]
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].map(lambda x: _clean_string(x) if isinstance(x, str) else x)
     return df
 
 def infer_date_and_target(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
@@ -70,6 +75,29 @@ def _infer_offset(dates: pd.Series):
                 days = int(max(1, med.days))
                 return pd.DateOffset(days=days)
     return pd.DateOffset(days=1)
+
+def detect_interval(dates: pd.Series) -> str:
+    """Return a human-friendly description of the series interval."""
+    s = pd.to_datetime(dates, errors="coerce").dropna()
+    if len(s) < 2:
+        return "unknown"
+    off = _infer_offset(s)
+    off = pd.tseries.frequencies.to_offset(off)
+    code = off.freqstr.upper()
+    base = ''.join(filter(str.isalpha, code))
+    names = {
+        "L": "milliseconds",
+        "S": "seconds",
+        "T": "minutes",
+        "H": "hours",
+        "D": "days",
+        "W": "weeks",
+        "M": "months",
+        "Q": "quarters",
+        "A": "years",
+    }
+    human = names.get(base, code)
+    return f"{code} ({human})"
 
 def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horizon: int) -> pd.DataFrame:
     """
