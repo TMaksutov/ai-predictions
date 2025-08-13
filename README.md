@@ -1,6 +1,8 @@
 # Simple Time-Series Predictor (Streamlit)
 Minimal Streamlit app to upload CSV/XLS/XLSX or delimited text and generate a small baseline forecast safely. The helper utilities can also auto-detect feature types (dates, numbers, categories, booleans) and train simple regression models such as RandomForest or LightGBM.
 
+On startup a random sample from `test_files` is loaded and forecasts refresh automatically whenever the data or settings change—no prediction button needed.
+
 ## Run locally
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\\Scripts\\activate

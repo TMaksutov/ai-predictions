@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import random
 from pathlib import Path
 from ts_core import load_table, infer_date_and_target, forecast_linear_safe, DataError, detect_interval
@@ -41,19 +40,18 @@ target_col = st.selectbox("Target (numeric)", candidates,
 
 st.caption(f"Detected interval: {detect_interval(df[date_col])}")
 
-if st.button("Run baseline forecast"):
-    try:
-        out = forecast_linear_safe(df, date_col, target_col, int(horizon))
-        st.subheader("Forecast")
-        st.line_chart(out.set_index("date")[["y", "yhat"]])
-        st.download_button("Download predictions as CSV",
-                           out.to_csv(index=False).encode("utf-8"),
-                           file_name="predictions.csv", mime="text/csv")
-        with st.expander("Details"):
-            st.dataframe(out.tail(min(50, len(out))))
-    except DataError as e:
-        st.error(str(e))
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
+try:
+    out = forecast_linear_safe(df, date_col, target_col, int(horizon))
+    st.subheader("Forecast")
+    st.line_chart(out.set_index("date")[["y", "yhat"]])
+    st.download_button("Download predictions as CSV",
+                       out.to_csv(index=False).encode("utf-8"),
+                       file_name="predictions.csv", mime="text/csv")
+    with st.expander("Details"):
+        st.dataframe(out.tail(min(50, len(out))))
+except DataError as e:
+    st.error(str(e))
+except Exception as e:
+    st.error(f"Unexpected error: {e}")
 
 st.caption("Baseline uses scikit-learn LinearRegression with a safe fallback to last value if modeling fails.")
