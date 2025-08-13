@@ -7,4 +7,5 @@ This repository is maintained without human review. Follow these rules:
 - Do not add GitHub Actions or external CI without instruction.
 - Use 4-space indentation and simple, readable Python.
 - After committing, open a PR with `make_pr` and fast-forward merge into `main`.
+- Update this file whenever repository procedures or rules change.
 
