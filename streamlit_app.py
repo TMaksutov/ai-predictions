@@ -1,10 +1,12 @@
 import os
-import streamlit as st
 import random
-from pathlib import Path
 import subprocess
 import io
 import zipfile
+from pathlib import Path
+
+import streamlit as st
+import streamlit.components.v1 as components
 from ts_core import (
     load_table,
     infer_date_and_target,
@@ -44,11 +46,12 @@ with st.sidebar:
         for example in example_files:
             zf.write(example, arcname=example.name)
     buffer.seek(0)
-    upload_col, example_col = st.columns([3, 1])
+    upload_col, example_col = st.columns([4, 1], gap="small")
     with upload_col:
         uploaded = st.file_uploader(
-            "CSV or Excel (.csv, .xlsx, .xls) (max 10 MB)",
+            "",
             type=["csv", "xlsx", "xls"],
+            label_visibility="collapsed",
         )
     with example_col:
         st.download_button(
@@ -56,7 +59,25 @@ with st.sidebar:
             buffer.getvalue(),
             "examples.zip",
         )
-    st.caption("Max upload size: 10 MB")
+    st.caption("CSV or Excel (.csv, .xlsx, .xls) (max 10 MB)")
+    components.html(
+        """
+        <script>
+        const fu = window.parent.document.querySelector('[data-testid="stFileUploader"]');
+        if (fu) {
+            const btn = fu.querySelector('button');
+            if (btn) {
+                const span = btn.querySelector('span');
+                if (span) span.style.display = 'none';
+                btn.appendChild(document.createTextNode('browse'));
+            }
+            const help = fu.querySelector('small');
+            if (help) { help.style.display = 'none'; }
+        }
+        </script>
+        """,
+        height=0,
+    )
     horizon = st.number_input(
         "Forecast horizon (steps)",
         min_value=1,
@@ -102,17 +123,22 @@ with st.sidebar:
         candidates,
         index=(candidates.index(auto_target) if auto_target in candidates else 0),
     )
-    st.caption(f"Detected interval: {detect_interval(df[date_col])}")
+    interval_full = detect_interval(df[date_col])
+    human = interval_full.split("(")[-1].strip(") ") if "(" in interval_full else interval_full
+    st.caption(f"Detected interval: {human.capitalize()}")
 
 try:
     out = forecast_linear_safe(df, date_col, target_col, int(horizon))
     st.subheader("Forecast")
     st.line_chart(out.set_index("date")[["y", "yhat"]])
-    st.download_button("Download predictions as CSV",
-                       out.to_csv(index=False).encode("utf-8"),
-                       file_name="predictions.csv", mime="text/csv")
     with st.expander("Details"):
         st.dataframe(out.tail(min(50, len(out))))
+    st.download_button(
+        "Download predictions",
+        out.to_csv(index=False).encode("utf-8"),
+        file_name="predictions.csv",
+        mime="text/csv",
+    )
 except DataError as e:
     st.error(str(e))
 except Exception as e:
