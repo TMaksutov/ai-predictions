@@ -46,33 +46,28 @@ with st.sidebar:
         for example in example_files:
             zf.write(example, arcname=example.name)
     buffer.seek(0)
-    upload_col, example_col = st.columns([4, 1], gap="small")
-    with upload_col:
-        uploaded = st.file_uploader(
-            "",
-            type=["csv", "xlsx", "xls"],
-            label_visibility="collapsed",
-        )
-    with example_col:
-        st.download_button(
-            "Examples",
-            buffer.getvalue(),
-            "examples.zip",
-        )
-    st.caption("CSV or Excel (.csv, .xlsx, .xls) (max 10 MB)")
+    st.download_button(
+        "Examples",
+        buffer.getvalue(),
+        "examples.zip",
+    )
+    uploaded = st.file_uploader(
+        "",
+        type=["csv", "xlsx", "xls"],
+        label_visibility="collapsed",
+    )
     components.html(
         """
         <script>
         const fu = window.parent.document.querySelector('[data-testid="stFileUploader"]');
         if (fu) {
             const btn = fu.querySelector('button');
-            if (btn) {
-                const span = btn.querySelector('span');
-                if (span) span.style.display = 'none';
-                btn.appendChild(document.createTextNode('browse'));
-            }
+            if (btn) { btn.textContent = 'Browse'; }
             const help = fu.querySelector('small');
-            if (help) { help.style.display = 'none'; }
+            if (help) {
+                help.textContent = 'CSV or Excel (.csv, .xlsx, .xls) (max 10 MB)';
+                help.style.display = 'block';
+            }
         }
         </script>
         """,
