@@ -138,77 +138,109 @@ with st.sidebar:
         st.caption(f"Detected interval: {interval}")
 
 # Forecasting
-if st.sidebar.button("Generate Forecast", type="primary"):
+try:
+    with st.spinner("Generating forecast with multiple models..."):
+        result, metrics = forecast_multiple_models(df, date_col, target_col, int(horizon))
+
+    st.subheader("Forecast Results - Multiple Models")
+
+    # Show model performance metrics
+    st.subheader("Model Performance (20% Test Data)")
+    st.dataframe(metrics, use_container_width=True)
+
+    # Chart with all models
+    st.subheader("Forecast Comparison")
+
+    # Prepare data for plotting
+    plot_data = result.set_index("date")
+    # Determine historical length from 'kind' column to be robust against cleaning
+    hist_len = (plot_data["kind"] == "historical").sum()
+
+    # Get forecast columns
+    forecast_cols = [col for col in plot_data.columns if col.endswith('_forecast')]
+
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Plot historical data
+    ax.plot(plot_data.index[:hist_len], plot_data['actual'][:hist_len], 
+            label='Historical', color='black', linewidth=2)
+
+    # Plot forecasts
+    colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
+    for i, col in enumerate(forecast_cols):
+        model_name = col.replace('_forecast', '')
+        color = colors[i % len(colors)]
+        ax.plot(plot_data.index[hist_len:], plot_data[col][hist_len:], 
+                label=f'{model_name}', color=color, linewidth=2, linestyle='--')
+
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Value')
+    ax.set_title('Time Series Forecast - Multiple Models')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    st.pyplot(fig)
+
+    # Details
+    with st.expander("Forecast Details"):
+        st.dataframe(result.tail(min(50, len(result))))
+
+    # Download
+    st.download_button(
+        "Download Predictions",
+        result.to_csv(index=False).encode("utf-8"),
+        file_name="predictions_multiple_models.csv",
+        mime="text/csv",
+    )
+
+    # Show best model
+    if not metrics.empty and 'RMSE' in metrics.columns:
+        best_model = metrics.iloc[0]['Model']
+        st.success(f"Best performing model: {best_model}")
+
+except DataError as e:
+    # Fallback to simple linear forecast for small or problematic datasets
     try:
-        with st.spinner("Generating forecast with multiple models..."):
-            result, metrics = forecast_multiple_models(df, date_col, target_col, int(horizon))
-        
-        st.subheader("Forecast Results - Multiple Models")
-        
-        # Show model performance metrics
-        st.subheader("Model Performance (20% Test Data)")
-        st.dataframe(metrics, use_container_width=True)
-        
-        # Chart with all models
-        st.subheader("Forecast Comparison")
-        
-        # Prepare data for plotting
-        plot_data = result.set_index("date")
-        
-        # Get forecast columns
-        forecast_cols = [col for col in plot_data.columns if col.endswith('_forecast')]
-        
-        # Create the main chart
+        with st.spinner("Using simple forecast due to dataset constraints..."):
+            simple = forecast_linear_safe(df, date_col, target_col, int(horizon))
+
+        st.subheader("Forecast Results - Simple Model")
+
         import matplotlib.pyplot as plt
-        import seaborn as sns
-        
         fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Plot historical data
-        ax.plot(plot_data.index[:len(df)], plot_data['actual'][:len(df)], 
-                label='Historical', color='black', linewidth=2)
-        
-        # Plot forecasts
-        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
-        for i, col in enumerate(forecast_cols):
-            model_name = col.replace('_forecast', '')
-            color = colors[i % len(colors)]
-            ax.plot(plot_data.index[len(df):], plot_data[col][len(df):], 
-                    label=f'{model_name}', color=color, linewidth=2, linestyle='--')
-        
+        # Determine historical length from 'kind'
+        hist_len_simple = (simple['kind'] == 'historical').sum()
+        ax.plot(simple['date'].iloc[:hist_len_simple], simple['y'].iloc[:hist_len_simple], label='Historical', color='black', linewidth=2)
+        ax.plot(simple['date'].iloc[hist_len_simple:], simple['yhat'].iloc[hist_len_simple:], label='Forecast', color='blue', linewidth=2, linestyle='--')
         ax.set_xlabel('Date')
         ax.set_ylabel('Value')
-        ax.set_title('Time Series Forecast - Multiple Models')
+        ax.set_title('Time Series Forecast - Simple Model')
         ax.legend()
         ax.grid(True, alpha=0.3)
-        
-        # Rotate x-axis labels for better readability
         plt.xticks(rotation=45)
         plt.tight_layout()
-        
         st.pyplot(fig)
-        
-        # Details
+
         with st.expander("Forecast Details"):
-            st.dataframe(result.tail(min(50, len(result))))
-        
-        # Download
+            st.dataframe(simple.tail(min(50, len(simple))))
+
         st.download_button(
             "Download Predictions",
-            result.to_csv(index=False).encode("utf-8"),
-            file_name="predictions_multiple_models.csv",
+            simple.to_csv(index=False).encode("utf-8"),
+            file_name="predictions_simple.csv",
             mime="text/csv",
         )
-        
-        # Show best model
-        if not metrics.empty and 'RMSE' in metrics.columns:
-            best_model = metrics.iloc[0]['Model']
-            st.success(f"Best performing model: {best_model}")
-        
-    except DataError as e:
-        st.error(str(e))
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
+    except Exception as inner_e:
+        st.error(f"Unexpected error during fallback: {inner_e}")
+except Exception as e:
+    st.error(f"Unexpected error: {e}")
 
 # Footer
 st.caption("Multiple models: Naive, Seasonal Naive, Linear Trend, Exponential Smoothing, Moving Average, and Polynomial Trend. Models are evaluated on 20% test data for stability comparison.")

@@ -4,3 +4,8 @@ date,value,category,notes
 2023-01-03,30.0,C,"Third entry"
 2023-01-04,40.5,A,"Fourth entry"
 2023-01-05,50.0,B,"Fifth entry"
+2023-01-06,60.5,C,"Sixth entry"
+2023-01-07,70.0,A,"Seventh entry"
+2023-01-08,80.25,B,"Eighth entry"
+2023-01-09,90.75,C,"Ninth entry"
+2023-01-10,100.0,A,"Tenth entry"
