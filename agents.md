@@ -146,3 +146,37 @@ This document provides instructions for AI agents working on this Time Series Fo
 **Last Updated**: 2024-12-28  
 **Next Review**: As needed based on user requirements  
 **Responsible**: AI Agent following these instructions
+
+## AI Agents Instructions
+
+This project includes AI agent instructions for systematic maintenance and updates. See this file for detailed guidance.
+
+### For AI Agents Working on This Project
+
+1. **Read First**: Always consult this file for current instructions and guidelines
+2. **Layout Constraints**: Maintain two-column layout with no scrolling required
+3. **Code Standards**: Follow established patterns for caching, layout, and performance
+4. **Update Protocol**: Use the instruction check and update procedures documented above
+
+### Updating Agents in the Future
+
+When new instructions are required for AI agents:
+
+1. **Modify this file**: Update the instruction file with new requirements
+2. **Follow Template**: Use the update template provided above
+3. **Document Changes**: Add entries to the update history section
+4. **Validate**: Test that new instructions work correctly
+5. **Version Control**: Commit changes with descriptive messages
+
+Example update process:
+```bash
+# Edit the agents instruction file
+nano agents.md
+
+# Test the changes work
+streamlit run streamlit_app.py
+
+# Commit the updated instructions
+git add agents.md
+git commit -m "Update agent instructions: [description]"
+```
