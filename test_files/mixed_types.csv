@@ -1,11 +1,11 @@
 date,value,category,notes
-2023-01-01,10.5,A,"First entry"
-2023-01-02,20.0,B,"Second entry"
-2023-01-03,30.0,C,"Third entry"
-2023-01-04,40.5,A,"Fourth entry"
-2023-01-05,50.0,B,"Fifth entry"
-2023-01-06,60.5,C,"Sixth entry"
-2023-01-07,70.0,A,"Seventh entry"
-2023-01-08,80.25,B,"Eighth entry"
-2023-01-09,90.75,C,"Ninth entry"
-2023-01-10,100.0,A,"Tenth entry"
+2023-01-01,58.245,A,Entry 1
+2023-01-02,66.612,B,Entry 2
+2023-01-03,71.537,C,Entry 3
+2023-01-04,73.740,A,Entry 4
+2023-01-05,73.325,B,Entry 5
+2023-01-06,72.021,C,Entry 6
+2023-01-07,70.957,A,Entry 7
+2023-01-08,69.185,B,Entry 8
+2023-01-09,65.467,C,Entry 9
+2023-01-10,62.410,A,Entry 10
