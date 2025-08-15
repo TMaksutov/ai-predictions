@@ -5,10 +5,6 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error
 from prophet import Prophet
 
 
@@ -16,7 +12,7 @@ st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
 
 # Compact header
 st.markdown("### Time Series Forecasting Benchmark")
-st.caption("RMSE comparison: Linear Regression vs Prophet on 10 sample datasets")
+st.caption("Prophet RMSE on 10 sample datasets")
 
 
 def _generate_sample_datasets() -> Dict[str, pd.DataFrame]:
@@ -161,92 +157,7 @@ def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
     return sub
 
 
-def _compute_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2):
-    """
-    Compute forecasts using Linear Regression with polynomial features and time-based features.
-    This is a reliable forecasting method that works well in deployment environments.
-    """
-    n = len(series_df)
-    if n < 10:
-        raise ValueError("Series too short for 20% holdout evaluation.")
 
-    test_size = max(1, int(math.ceil(n * test_fraction)))
-    train_df = series_df.iloc[:-test_size].copy()
-    test_df = series_df.iloc[-test_size:].copy()
-
-    # Create time-based features
-    def create_features(df):
-        features_df = df.copy()
-        features_df['timestamp'] = features_df['ds'].astype('int64') // 10**9  # Unix timestamp
-        
-        # Normalize timestamp
-        min_ts = features_df['timestamp'].min()
-        features_df['time_idx'] = features_df['timestamp'] - min_ts
-        if features_df['time_idx'].std() > 0:
-            features_df['time_idx'] = features_df['time_idx'] / features_df['time_idx'].std()
-        
-        # Add cyclical features
-        features_df['day_of_week'] = features_df['ds'].dt.dayofweek
-        features_df['month'] = features_df['ds'].dt.month
-        features_df['hour'] = features_df['ds'].dt.hour
-        features_df['day_of_year'] = features_df['ds'].dt.dayofyear
-        
-        # Sine/cosine encoding for cyclical features
-        features_df['dow_sin'] = np.sin(2 * np.pi * features_df['day_of_week'] / 7)
-        features_df['dow_cos'] = np.cos(2 * np.pi * features_df['day_of_week'] / 7)
-        features_df['month_sin'] = np.sin(2 * np.pi * features_df['month'] / 12)
-        features_df['month_cos'] = np.cos(2 * np.pi * features_df['month'] / 12)
-        features_df['hour_sin'] = np.sin(2 * np.pi * features_df['hour'] / 24)
-        features_df['hour_cos'] = np.cos(2 * np.pi * features_df['hour'] / 24)
-        features_df['doy_sin'] = np.sin(2 * np.pi * features_df['day_of_year'] / 365)
-        features_df['doy_cos'] = np.cos(2 * np.pi * features_df['day_of_year'] / 365)
-        
-        return features_df
-    
-    # Prepare features
-    train_features = create_features(train_df)
-    
-    # Select feature columns
-    feature_cols = ['time_idx', 'dow_sin', 'dow_cos', 'month_sin', 'month_cos', 
-                   'hour_sin', 'hour_cos', 'doy_sin', 'doy_cos']
-    
-    X_train = train_features[feature_cols].values
-    y_train = train_features['y'].values
-    
-    # Create polynomial features and fit model
-    try:
-        # Try polynomial features with linear regression
-        model = Pipeline([
-            ('poly', PolynomialFeatures(degree=2, include_bias=False)),
-            ('linear', LinearRegression())
-        ])
-        model.fit(X_train, y_train)
-    except:
-        # Fallback to simple linear regression
-        model = LinearRegression()
-        model.fit(X_train, y_train)
-    
-    # Create features for full series to get forecast
-    full_features = create_features(series_df)
-    X_full = full_features[feature_cols].values
-    
-    # Predict
-    y_pred = model.predict(X_full)
-    
-    # Create forecast dataframe
-    forecast = pd.DataFrame({
-        'ds': series_df['ds'],
-        'yhat': y_pred,
-        'yhat_lower': y_pred * 0.95,  # Simple confidence interval
-        'yhat_upper': y_pred * 1.05
-    })
-    
-    # Calculate RMSE on test set
-    yhat_test = y_pred[-test_size:]
-    y_true = test_df['y'].to_numpy()
-    rmse = float(np.sqrt(mean_squared_error(y_true, yhat_test)))
-
-    return rmse, forecast, test_df
 
 
 def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
@@ -285,9 +196,9 @@ def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: f
     forecast = model.predict(future)
     
     # Calculate RMSE on test set
-    yhat_test = forecast['yhat'].iloc[-test_size:].values
+    yhat_test = forecast['yhat'].iloc[-test_size:].to_numpy()
     y_true = test_df['y'].to_numpy()
-    rmse = float(np.sqrt(mean_squared_error(y_true, yhat_test)))
+    rmse = float(np.sqrt(np.mean((y_true - yhat_test) ** 2)))
     
     return rmse, forecast, test_df
 
@@ -301,21 +212,16 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
             raw_df, _ = _load_dataset(name)
             series_df = _prepare_single_series(raw_df)
             
-            # Compute Linear Regression RMSE
-            lr_rmse, _, _ = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
-            
             # Compute Prophet RMSE
             prophet_rmse, _, _ = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
             
             results.append({
-                "Dataset": name, 
-                "Linear Regression RMSE": f"{lr_rmse:.4f}",
+                "Dataset": name,
                 "Prophet RMSE": f"{prophet_rmse:.4f}"
             })
         except Exception as e:
             results.append({
-                "Dataset": name, 
-                "Linear Regression RMSE": "Error", 
+                "Dataset": name,
                 "Prophet RMSE": "Error",
                 "Error": str(e)[:50]
             })
