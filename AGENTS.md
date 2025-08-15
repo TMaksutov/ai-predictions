@@ -2,6 +2,7 @@
 
 This repository is maintained without human review. Follow these rules:
 
+- Always push directly to `main`. Do not create feature branches or pull requests.
 - Keep dependencies minimal and update `requirements.txt` when needed.
 - Use 4-space indentation and simple, readable Python.
 - Prefer common libraries over custom implementations.
