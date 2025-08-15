@@ -8,5 +8,5 @@ This repository is maintained without human review. Follow these rules:
 - Keep code simple and avoid complex logic.
 - Update tests and requirments.
 - Run `pytest` and ensure it passes before committing.
-- After committing push into `main`. I work alone.
+- Always push directly to `main`. Do not create feature branches or pull requests.
 - Update `AGENTS.md` and `README.md` whenever repository instructions change.

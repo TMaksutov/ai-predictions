@@ -30,7 +30,7 @@ streamlit run streamlit_app.py
 1. **Upload Data**: Upload your CSV or Excel file
 2. **Auto-detect**: The app automatically detects date and target columns
 3. **Select Columns**: Manually adjust column selections if needed
-4. **Generate Forecast**: Click the button to create predictions
+4. **Generate Forecast**: Forecasts are generated automatically; small datasets fall back to a simple model
 5. **Download Results**: Export your forecasts as CSV
 
 ## Technical Details
@@ -55,6 +55,8 @@ The `test_files/` directory contains example datasets covering different time in
 - **Python**: 3.8+
 
 ## Development
+
+- All changes should be pushed directly to `main` (no branches/PRs).
 
 Run tests locally before committing:
 ```bash
