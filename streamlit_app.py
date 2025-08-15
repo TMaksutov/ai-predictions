@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 import streamlit as st
+import pandas as pd
 from ts_core import (
     load_table,
     infer_date_and_target,
@@ -76,6 +77,16 @@ with st.sidebar:
         max_value=1000,
         value=12,
         help="Number of future periods to forecast"
+    )
+
+    # Monash dataset filter setting
+    monash_max_kb = st.number_input(
+        "Monash max file size (KB)",
+        min_value=1,
+        max_value=1000,
+        value=10,
+        step=1,
+        help="Only include Monash series/files smaller than this size to speed up the benchmark"
     )
 
 # File size check
@@ -241,6 +252,70 @@ except DataError as e:
         st.error(f"Unexpected error during fallback: {inner_e}")
 except Exception as e:
     st.error(f"Unexpected error: {e}")
+
+# Benchmark: Test files + Monash (sample)
+st.subheader("Benchmark: Test Files + Monash (RMSE by model)")
+st.markdown(
+    "Compare RMSE across all built-in models on bundled test files and a Monash sample. "
+    "Learn more about the Monash Time Series Forecasting Archive: "
+    "[Paper](https://arxiv.org/abs/2005.06643), "
+    "[GitHub](https://github.com/robjhyndman/tsdl), "
+    "[Data source list](https://forecastingdata.org/)."
+)
+
+with st.spinner("Computing benchmark table..."):
+    model_order = ['Naive', 'Seasonal Naive', 'Linear Trend', 'Exponential Smoothing', 'Moving Average', 'Polynomial Trend']
+    rows = []
+
+    # Evaluate on bundled test files
+    for path in sorted(DATA_DIR.glob("*.csv")):
+        # Skip monash sample here; we'll add it explicitly later
+        if path.name.lower() == "monash_sample.csv":
+            continue
+        try:
+            with path.open("rb") as fh:
+                df_file = load_table(fh)
+            dcol, tcol = infer_date_and_target(df_file)
+            if dcol is None or tcol is None:
+                continue
+            _, mtx = forecast_multiple_models(df_file, dcol, tcol, int(horizon))
+            rmse_map = {row['Model']: row['RMSE'] for _, row in mtx.iterrows()}
+            row = {"Dataset": path.name}
+            for m in model_order:
+                row[m] = rmse_map.get(m, float("nan"))
+            rows.append(row)
+        except Exception:
+            # Skip files that cannot be processed
+            continue
+
+    # Add Monash sample dataset (filtered by size)
+    monash_path = DATA_DIR / "monash_sample.csv"
+    try:
+        if monash_path.exists():
+            size_ok = monash_path.stat().st_size <= int(monash_max_kb) * 1024
+            if size_ok:
+                with monash_path.open("rb") as fh:
+                    df_monash = load_table(fh)
+                dcol_m, tcol_m = infer_date_and_target(df_monash)
+                if dcol_m is not None and tcol_m is not None:
+                    _, mtx_m = forecast_multiple_models(df_monash, dcol_m, tcol_m, int(horizon))
+                    rmse_map_m = {row['Model']: row['RMSE'] for _, row in mtx_m.iterrows()}
+                    row_m = {"Dataset": "Monash (sample)"}
+                    for m in model_order:
+                        row_m[m] = rmse_map_m.get(m, float("nan"))
+                    rows.append(row_m)
+            else:
+                st.caption(
+                    f"Monash sample excluded: file size {monash_path.stat().st_size} bytes exceeds limit of {int(monash_max_kb)*1024} bytes."
+                )
+    except Exception as e:
+        st.caption(f"Monash sample could not be evaluated: {e}")
+
+    if rows:
+        benchmark_df = pd.DataFrame(rows)
+        st.dataframe(benchmark_df, use_container_width=True)
+    else:
+        st.info("No datasets available for benchmarking.")
 
 # Footer
 st.caption("Multiple models: Naive, Seasonal Naive, Linear Trend, Exponential Smoothing, Moving Average, and Polynomial Trend. Models are evaluated on 20% test data for stability comparison.")
