@@ -12,9 +12,11 @@ from sklearn.metrics import mean_squared_error
 from prophet import Prophet
 
 
-st.set_page_config(page_title="Time Series Forecasting Benchmark", layout="wide")
-st.title("Time Series Forecasting Benchmark — 10 Sample Datasets")
-st.caption("RMSE on last 20% holdout using Linear Regression + Polynomial Features. Select a dataset to view its forecast plot.")
+st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
+
+# Compact header
+st.markdown("### Time Series Forecasting Benchmark")
+st.caption("RMSE comparison: Linear Regression vs Prophet on 10 sample datasets")
 
 
 def _generate_sample_datasets() -> Dict[str, pd.DataFrame]:
@@ -323,63 +325,74 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 # Load dataset names
 dataset_names = _get_dataset_names()
 
-# Benchmark table
-st.subheader("Benchmark Results (Linear Regression and Prophet RMSE on last 20%)")
-with st.spinner("Computing benchmark for 10 sample datasets..."):
-    bench_df = _compute_benchmark(tuple(dataset_names))
+# Create two columns layout
+col1, col2 = st.columns([1, 1.2])
 
-st.dataframe(bench_df, use_container_width=True)
-
-# Selection and plot
-st.subheader("Forecast plot for selected dataset")
-selected = st.selectbox("Select dataset to visualize", dataset_names, index=0)
-
-if selected:
-    with st.spinner(f"Loading and forecasting: {selected}"):
-        raw_df, metadata = _load_dataset(selected)
-        series_df = _prepare_single_series(raw_df)
-        rmse, forecast, test_df = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
-
-    st.caption(f"**Dataset**: {metadata['description']}")
-    st.caption(f"**RMSE**: {rmse:.4f} | **Data Points**: {len(series_df)} | **Test Size**: {len(test_df)}")
-
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(12, 6))
+with col1:
+    st.markdown("#### Benchmark Results")
+    with st.spinner("Computing benchmark..."):
+        bench_df = _compute_benchmark(tuple(dataset_names))
     
-    # Plot full actual data
-    ax.plot(series_df["ds"], series_df["y"], color="#333333", label="Actual", linewidth=2, alpha=0.8)
-
-    # Plot forecast for test period only
-    test_pred = forecast.tail(len(test_df))
-    ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast (test period)")
+    # Display table with compact styling
+    st.dataframe(bench_df, use_container_width=True, height=400)
     
-    # Add confidence interval for test period
-    ax.fill_between(test_pred["ds"], test_pred["yhat_lower"], test_pred["yhat_upper"], 
-                   color="#1f77b4", alpha=0.2, label="Confidence interval")
+    # Selection widget
+    st.markdown("#### Select Dataset")
+    selected = st.selectbox("Choose dataset to visualize:", dataset_names, index=0, label_visibility="collapsed")
 
-    # Split marker
-    if len(test_df) > 0:
-        ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test split")
-
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Value")
-    ax.set_title(f"Time Series Forecast: {selected}")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-
-    st.pyplot(fig)
+with col2:
+    st.markdown("#### Forecast Visualization")
     
-    # Display some stats
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("RMSE", f"{rmse:.3f}")
-    with col2:
-        st.metric("Train Size", f"{len(series_df) - len(test_df)}")
-    with col3:
-        st.metric("Test Size", f"{len(test_df)}")
-    with col4:
-        st.metric("Mean Value", f"{series_df['y'].mean():.1f}")
+    if selected:
+        with st.spinner(f"Generating forecast..."):
+            raw_df, metadata = _load_dataset(selected)
+            series_df = _prepare_single_series(raw_df)
+            rmse, forecast, test_df = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
 
-st.info("💡 This benchmark uses 10 synthetically generated time series datasets with different patterns (trends, seasonality, cycles, etc.) to test forecasting performance.")
+        # Compact info display
+        st.caption(f"**{selected}** | RMSE: {rmse:.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
+
+        import matplotlib.pyplot as plt
+
+        # Create smaller figure to fit layout
+        fig, ax = plt.subplots(figsize=(8, 5))
+        
+        # Plot full actual data
+        ax.plot(series_df["ds"], series_df["y"], color="#333333", label="Actual", linewidth=2, alpha=0.8)
+
+        # Plot forecast for test period only
+        test_pred = forecast.tail(len(test_df))
+        ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast")
+        
+        # Add confidence interval for test period
+        ax.fill_between(test_pred["ds"], test_pred["yhat_lower"], test_pred["yhat_upper"], 
+                       color="#1f77b4", alpha=0.2, label="Confidence")
+
+        # Split marker
+        if len(test_df) > 0:
+            ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test")
+
+        ax.set_xlabel("Date", fontsize=10)
+        ax.set_ylabel("Value", fontsize=10)
+        ax.set_title(f"Forecast: {selected}", fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelsize=9)
+        fig.tight_layout()
+
+        st.pyplot(fig)
+        
+        # Compact metrics in columns
+        col2a, col2b, col2c, col2d = st.columns(4)
+        with col2a:
+            st.metric("RMSE", f"{rmse:.3f}", label_visibility="visible")
+        with col2b:
+            st.metric("Train", f"{len(series_df) - len(test_df)}")
+        with col2c:
+            st.metric("Test", f"{len(test_df)}")
+        with col2d:
+            st.metric("Mean", f"{series_df['y'].mean():.1f}")
+
+# Bottom info - more compact
+st.markdown("---")
+st.caption("💡 10 synthetic datasets with different patterns (trends, seasonality, cycles) for forecasting performance testing.")
