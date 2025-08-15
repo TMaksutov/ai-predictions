@@ -1,9 +1,0 @@
-pull_request_rules:
-  - name: Auto-merge any clean PR
-    conditions:
-      - -draft        # PR is not a draft
-      - -conflict     # No merge conflicts
-      - base=main     # Target branch is main (change if different)
-    actions:
-      merge:
-        method: squash  # or 'merge' / 'rebase'
