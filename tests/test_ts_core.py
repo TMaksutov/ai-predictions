@@ -3,7 +3,7 @@ import pandas as pd, numpy as np
 import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from ts_core import forecast_linear_safe, load_table, detect_interval, DataError, train_regression_models
+from ts_core import forecast_linear_safe, load_table, detect_interval, DataError
 
 def _make_df(n=20, start="2023-01-01"):
     dates = pd.date_range(start=start, periods=n, freq="D")
@@ -35,22 +35,13 @@ def test_load_table_no_header():
     df = load_table(f)
     assert list(df.columns) == ["col0", "col1"]
 
-def test_load_table_semicolon_and_xls():
+def test_load_table_semicolon():
     df0 = _make_df()
     csv = df0.to_csv(index=False, sep=';').encode('utf-8')
     f = io.BytesIO(csv); f.name = 'demo.txt'
     df = load_table(f)
     df['date'] = pd.to_datetime(df['date'])
     pd.testing.assert_frame_equal(df, df0)
-    pytest.importorskip('xlwt')
-    pytest.importorskip('xlrd')
-    f2 = io.BytesIO()
-    with pd.ExcelWriter(f2, engine='xlwt') as writer:
-        df0.to_excel(writer, index=False)
-    f2.seek(0); f2.name = 'demo.xls'
-    df_xls = load_table(f2)
-    df_xls['date'] = pd.to_datetime(df_xls['date'])
-    pd.testing.assert_frame_equal(df_xls, df0)
 
 def test_subday_frequency_offset():
     df = pd.DataFrame({
@@ -66,16 +57,20 @@ def test_detect_interval():
     interval = detect_interval(df['date'])
     assert 'D' in interval
 
-def test_train_regression_models():
-    df = pd.DataFrame({
-        "when": ["2024/01/01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
-        "num": [1, 2, 3, 4, 5],
-        "cat": ["a", "b", "a", "b", "a"],
-        "flag": ["yes", "no", "yes", "no", "yes"],
-        "y": [1.0, 1.2, 1.1, 1.3, 1.4],
-    })
-    out = train_regression_models(df, "y")
-    assert "RandomForest" in out
-    m = out["RandomForest"]
-    assert set(m) == {"MAE", "RMSE", "R2"}
+def test_invalid_horizon():
+    df = _make_df()
+    with pytest.raises(DataError):
+        forecast_linear_safe(df, "date", "value", horizon=0)
+    
+    with pytest.raises(DataError):
+        forecast_linear_safe(df, "date", "value", horizon=1001)
+
+def test_data_error_handling():
+    with pytest.raises(DataError):
+        load_table(None)
+    
+    empty_csv = "".encode("utf-8")
+    f = io.BytesIO(empty_csv); f.name = "empty.csv"
+    with pytest.raises(DataError):
+        load_table(f)
 

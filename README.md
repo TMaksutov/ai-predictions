@@ -1,26 +1,63 @@
 # Simple Time-Series Predictor (Streamlit)
-Minimal Streamlit app to upload CSV/XLS/XLSX or delimited text and generate a small baseline forecast safely. The helper utilities can also auto-detect feature types (dates, numbers, categories, booleans) and train simple regression models such as RandomForest or LightGBM.
 
-On startup a random sample from `test_files` is loaded and forecasts refresh automatically whenever the data or settings change—no prediction button needed.
+A clean, simple Streamlit app for time-series forecasting. Upload CSV/XLS/XLSX files, select your date and target columns, and get baseline forecasts using linear regression with automatic fallback.
 
-## Run locally
+## Features
+
+- **Simple Interface**: Clean, intuitive UI with automatic column detection
+- **Robust Forecasting**: Linear regression with fallback to last value if modeling fails
+- **File Support**: CSV, Excel (.xlsx, .xls) files up to 10 MB
+- **Auto-detection**: Automatically identifies date columns and numeric targets
+- **Interval Detection**: Detects time series frequency (daily, hourly, etc.)
+- **Sample Data**: Includes example datasets for testing
+
+## Quick Start
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
-pip install -r requirements-dev.txt
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the app
 streamlit run streamlit_app.py
 ```
 
-The app automatically cleans uploaded tables and infers the time interval (day, week, etc.) after you select the date column.
+## How It Works
 
-Use `train_regression_models(df, target)` to fit models on any tabular data. Columns are parsed for dates, booleans and categories, missing values are handled, and the last 30% of rows are used for evaluation. LightGBM will be used if installed.
+1. **Upload Data**: Upload your CSV or Excel file
+2. **Auto-detect**: The app automatically detects date and target columns
+3. **Select Columns**: Manually adjust column selections if needed
+4. **Generate Forecast**: Click the button to create predictions
+5. **Download Results**: Export your forecasts as CSV
 
-## Test Files
+## Technical Details
 
-Sample datasets in `test_files` now include multi-feature examples like `weekly_multi.csv` and `minute_multi.csv` to cover different time intervals.
+- **Forecasting**: Uses scikit-learn LinearRegression on time indices
+- **Fallback**: If modeling fails, falls back to naive forecast (last value)
+- **Data Cleaning**: Automatic handling of missing values and duplicates
+- **Safety Checks**: Built-in validation for file size and data quality
 
-## Maintainer Notes
+## Sample Data
 
-No external CI is configured. Run `pytest` locally before committing.
+The `test_files/` directory contains example datasets covering different time intervals:
+- `daily.csv` - Daily data
+- `hourly.csv` - Hourly data  
+- `weekly_multi.csv` - Weekly data with multiple features
+- `minute_multi.csv` - Minute-level data
 
-When repository instructions change, update both `AGENTS.md` and `README.md` to keep guidance in sync.
+## Dependencies
+
+- **Core**: streamlit, pandas, numpy, scikit-learn
+- **File Support**: openpyxl, xlrd
+- **Python**: 3.8+
+
+## Development
+
+Run tests locally before committing:
+```bash
+pytest
+```
 
