@@ -6,7 +6,7 @@ A Streamlit web application for benchmarking Prophet time series forecasting on 
 
 This application provides:
 - **Benchmark results** for Prophet model only
-- **RMSE evaluation** on the last 20% of each dataset (holdout test set)
+- **NRMSE evaluation** on the last 20% of each dataset (holdout test set)
 - **Interactive visualization** of forecasts for selected datasets
 - **10 diverse sample datasets** covering different time series patterns
 - **Optimized layout** with table on left, graph on right, all content fitting on one page

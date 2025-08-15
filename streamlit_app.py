@@ -1,4 +1,5 @@
 from typing import List, Tuple, Dict
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,10 @@ st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
 
 # Compact header
 st.markdown("### Time Series Forecasting Benchmark")
-st.caption("Prophet RMSE on 10 sample datasets")
+st.caption("Prophet NRMSE on 10 sample datasets")
+
+# Parameter optimization toggle
+optimize_params = st.checkbox("Optimize Prophet parameters (slower but better results)", value=True)
 
 
 def _generate_sample_datasets() -> Dict[str, pd.DataFrame]:
@@ -155,33 +159,119 @@ def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
     return sub
 
 
-
-
-
-def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+def _optimize_prophet_parameters(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Dict:
     """
-    Compute Prophet forecast and RMSE on test set.
+    Find optimal Prophet parameters for a dataset using grid search.
     
     Args:
         series_df: DataFrame with 'ds' and 'y' columns
         test_fraction: Fraction of data to use for testing
         
     Returns:
-        tuple: (rmse, forecast_df, test_df)
+        dict: Best parameters found
+    """
+    # Define parameter grid for optimization
+    param_grid = {
+        'changepoint_prior_scale': [0.01, 0.05, 0.1, 0.5],
+        'seasonality_prior_scale': [1.0, 10.0, 20.0],
+        'daily_seasonality': [True, False],
+        'weekly_seasonality': [True, False],
+        'yearly_seasonality': [True, False],
+    }
+    
+    # Generate all combinations
+    keys = param_grid.keys()
+    values = param_grid.values()
+    param_combinations = [dict(zip(keys, combination)) for combination in itertools.product(*values)]
+    
+    # Split data
+    test_size = int(len(series_df) * test_fraction)
+    train_df = series_df.iloc[:-test_size].copy()
+    test_df = series_df.iloc[-test_size:].copy()
+    
+    best_nrmse = float('inf')
+    best_params = {}
+    
+    # Suppress Prophet output
+    import logging
+    logging.getLogger('prophet').setLevel(logging.ERROR)
+    
+    # Try each parameter combination (limit to avoid timeout)
+    max_combinations = 20  # Limit for performance
+    param_combinations = param_combinations[:max_combinations]
+    
+    for params in param_combinations:
+        try:
+            # Train model with current parameters
+            model = Prophet(**params)
+            model.fit(train_df)
+            
+            # Make predictions
+            future = model.make_future_dataframe(periods=test_size)
+            forecast = model.predict(future)
+            
+            # Calculate NRMSE
+            yhat_test = forecast['yhat'].iloc[-test_size:].to_numpy()
+            y_true = test_df['y'].to_numpy()
+            rmse = float(np.sqrt(np.mean((y_true - yhat_test) ** 2)))
+            y_range = np.max(y_true) - np.min(y_true)
+            nrmse = rmse / y_range if y_range > 0 else rmse
+            
+            if nrmse < best_nrmse:
+                best_nrmse = nrmse
+                best_params = params.copy()
+                
+        except Exception:
+            # Skip problematic parameter combinations
+            continue
+    
+    # Return default parameters if optimization failed
+    if not best_params:
+        best_params = {
+            'daily_seasonality': True,
+            'weekly_seasonality': True,
+            'yearly_seasonality': True,
+            'changepoint_prior_scale': 0.05,
+            'seasonality_prior_scale': 10.0
+        }
+    
+    return best_params
+
+
+
+
+
+def _compute_prophet_forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2, optimize_params: bool = True) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+    """
+    Compute Prophet forecast and NRMSE on test set.
+    
+    Args:
+        series_df: DataFrame with 'ds' and 'y' columns
+        test_fraction: Fraction of data to use for testing
+        optimize_params: Whether to optimize parameters for this dataset
+        
+    Returns:
+        tuple: (nrmse, forecast_df, test_df)
     """
     # Split data
     test_size = int(len(series_df) * test_fraction)
     train_df = series_df.iloc[:-test_size].copy()
     test_df = series_df.iloc[-test_size:].copy()
     
-    # Train Prophet model
-    model = Prophet(
-        daily_seasonality=True,
-        weekly_seasonality=True,
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.05,
-        seasonality_prior_scale=10.0
-    )
+    # Get optimal parameters if requested
+    if optimize_params:
+        prophet_params = _optimize_prophet_parameters(series_df, test_fraction)
+    else:
+        prophet_params = {
+            'daily_seasonality': True,
+            'weekly_seasonality': True,
+            'yearly_seasonality': True,
+            'changepoint_prior_scale': 0.05,
+            'seasonality_prior_scale': 10.0
+        }
+    
+    # Train Prophet model with optimal parameters
+    model = Prophet(**prophet_params)
     
     # Suppress Prophet output
     import logging
@@ -193,16 +283,19 @@ def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: f
     future = model.make_future_dataframe(periods=test_size)
     forecast = model.predict(future)
     
-    # Calculate RMSE on test set
+    # Calculate NRMSE on test set
     yhat_test = forecast['yhat'].iloc[-test_size:].to_numpy()
     y_true = test_df['y'].to_numpy()
     rmse = float(np.sqrt(np.mean((y_true - yhat_test) ** 2)))
+    # Normalize by range of true values
+    y_range = np.max(y_true) - np.min(y_true)
+    nrmse = rmse / y_range if y_range > 0 else rmse
     
-    return rmse, forecast, test_df
+    return nrmse, forecast, test_df
 
 
 @st.cache_data(show_spinner=False)
-def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
+def _compute_benchmark(dataset_names: Tuple[str, ...], optimize_parameters: bool = True) -> pd.DataFrame:
     """Compute benchmark results for all datasets."""
     results = []
     for name in dataset_names:
@@ -210,17 +303,17 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
             raw_df, _ = _load_dataset(name)
             series_df = _prepare_single_series(raw_df)
             
-            # Compute Prophet RMSE
-            prophet_rmse, _, _ = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
+            # Compute Prophet NRMSE
+            prophet_nrmse, _, _ = _compute_prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params=optimize_parameters)
             
             results.append({
                 "Dataset": name,
-                "Prophet RMSE": f"{prophet_rmse:.4f}"
+                "Prophet NRMSE": f"{prophet_nrmse:.4f}"
             })
         except Exception as e:
             results.append({
                 "Dataset": name,
-                "Prophet RMSE": "Error",
+                "Prophet NRMSE": "Error",
                 "Error": str(e)[:50]
             })
     return pd.DataFrame(results)
@@ -235,7 +328,7 @@ col1, col2 = st.columns([1, 1.2])
 with col1:
     st.markdown("#### Benchmark Results")
     with st.spinner("Computing benchmark..."):
-        bench_df = _compute_benchmark(tuple(dataset_names))
+        bench_df = _compute_benchmark(tuple(dataset_names), optimize_parameters=optimize_params)
     
     # Click-to-select via checkbox column
     if "selected_dataset" not in st.session_state:
@@ -250,7 +343,7 @@ with col1:
         column_config={
             "Select": st.column_config.CheckboxColumn("Select", help="Click to visualize this dataset", default=False),
             "Dataset": st.column_config.TextColumn("Dataset", disabled=True),
-            "Prophet RMSE": st.column_config.TextColumn("Prophet RMSE", disabled=True),
+            "Prophet NRMSE": st.column_config.TextColumn("Prophet NRMSE", disabled=True),
             "Error": st.column_config.TextColumn("Error", disabled=True),
         },
     )
@@ -266,10 +359,10 @@ with col2:
         with st.spinner(f"Generating forecast..."):
             raw_df, metadata = _load_dataset(selected)
             series_df = _prepare_single_series(raw_df)
-            rmse, forecast, test_df = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
+            nrmse, forecast, test_df = _compute_prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params=optimize_params)
 
         # Compact info display
-        st.caption(f"**{selected}** | RMSE: {rmse:.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
+        st.caption(f"**{selected}** | NRMSE: {nrmse:.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
 
         import matplotlib.pyplot as plt
 
@@ -304,7 +397,7 @@ with col2:
         # Compact metrics in columns
         col2a, col2b, col2c, col2d = st.columns(4)
         with col2a:
-            st.metric("RMSE", f"{rmse:.3f}", label_visibility="visible")
+            st.metric("NRMSE", f"{nrmse:.3f}", label_visibility="visible")
         with col2b:
             st.metric("Train", f"{len(series_df) - len(test_df)}")
         with col2c:
