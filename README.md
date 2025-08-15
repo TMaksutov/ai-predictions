@@ -1,15 +1,14 @@
-# Simple Time-Series Predictor (Streamlit)
+# Prophet Benchmark - Monash Time Series Forecasting Archive
 
-A clean, simple Streamlit app for time-series forecasting. Upload CSV/XLS/XLSX files, select your date and target columns, and get baseline forecasts using linear regression with automatic fallback.
+A Streamlit application that benchmarks Prophet forecasting performance on the first 10 datasets from the Monash Time Series Forecasting Archive. The app computes RMSE on a 20% holdout test set and provides interactive visualization of forecasts.
 
 ## Features
 
-- **Simple Interface**: Clean, intuitive UI with automatic column detection
-- **Robust Forecasting**: Linear regression with fallback to last value if modeling fails
-- **File Support**: CSV, Excel (.xlsx, .xls) files up to 10 MB
-- **Auto-detection**: Automatically identifies date columns and numeric targets
-- **Interval Detection**: Detects time series frequency (daily, hourly, etc.)
-- **Sample Data**: Includes example datasets for testing
+- **Automated Benchmarking**: Runs Prophet on first 10 Monash datasets automatically
+- **RMSE Evaluation**: Computes Root Mean Square Error on 20% holdout test data
+- **Interactive Visualization**: Select any dataset to view the forecast plot
+- **Robust Data Handling**: Automatically processes diverse time series formats
+- **Clean Interface**: Simple Streamlit UI with clear results presentation
 
 ## Quick Start
 
@@ -21,45 +20,42 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the app
+# Run the benchmark app
 streamlit run streamlit_app.py
 ```
 
 ## How It Works
 
-1. **Upload Data**: Upload your CSV or Excel file
-2. **Auto-detect**: The app automatically detects date and target columns
-3. **Select Columns**: Manually adjust column selections if needed
-4. **Generate Forecast**: Forecasts are generated automatically; small datasets fall back to a simple model
-5. **Download Results**: Export your forecasts as CSV
+1. **Dataset Loading**: Automatically loads first 10 datasets from Monash Time Series Forecasting Archive via tsdl
+2. **Data Preparation**: Normalizes data to Prophet format (ds, y columns) and handles multiple series
+3. **Train/Test Split**: Uses 80% for training, 20% for testing
+4. **Prophet Forecasting**: Fits Prophet model on training data and forecasts on full timeline
+5. **RMSE Calculation**: Computes RMSE between Prophet predictions and actual test values
+6. **Interactive Plots**: Click any dataset to see actual vs predicted values for test period
 
 ## Technical Details
 
-- **Forecasting**: Uses scikit-learn LinearRegression on time indices
-- **Fallback**: If modeling fails, falls back to naive forecast (last value)
-- **Data Cleaning**: Automatic handling of missing values and duplicates
-- **Safety Checks**: Built-in validation for file size and data quality
-
-## Sample Data
-
-The `test_files/` directory contains example datasets covering different time intervals:
-- `daily.csv` - Daily data
-- `hourly.csv` - Hourly data  
-- `weekly_multi.csv` - Weekly data with multiple features
-- `minute_multi.csv` - Minute-level data
+- **Forecasting Model**: Facebook Prophet with default parameters
+- **Evaluation Metric**: RMSE on 20% holdout test set
+- **Data Source**: Monash Time Series Forecasting Archive (via tsdl library)
+- **Data Processing**: Automatic datetime parsing, deduplication, and missing value handling
+- **Visualization**: Matplotlib plots showing actual data, forecast, and train/test split
 
 ## Dependencies
 
-- **Core**: streamlit, pandas, numpy, scikit-learn
-- **File Support**: openpyxl, xlrd
+- **Core**: streamlit, pandas, numpy, matplotlib
+- **Forecasting**: prophet, pystan, cmdstanpy
+- **Data**: tsdl (Monash Time Series Data Library)
 - **Python**: 3.8+
+
+## Benchmark Results
+
+The application displays:
+- **Summary Table**: All 10 datasets with their Prophet RMSE scores
+- **Detailed View**: Select any dataset to see the forecast visualization
+- **Test Period Focus**: Plots highlight the 20% test period where RMSE is calculated
 
 ## Development
 
-- All changes should be pushed directly to `main` (no branches/PRs).
-
-Run tests locally before committing:
-```bash
-pytest
-```
+All changes should be pushed directly to `main` branch.
 
