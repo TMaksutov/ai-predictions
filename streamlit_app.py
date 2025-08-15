@@ -46,6 +46,13 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 with st.sidebar:
     st.subheader("Data Input")
     
+    # File uploader
+    uploaded = st.file_uploader(
+        "Upload your data file",
+        type=["csv", "xlsx", "xls"],
+        help="CSV or Excel files up to 10 MB"
+    )
+    
     # Example files download
     example_files = sorted(DATA_DIR.glob("*"))
     if example_files:
@@ -55,18 +62,11 @@ with st.sidebar:
                 zf.write(example, arcname=example.name)
         buffer.seek(0)
         st.download_button(
-            "Download Examples",
+            "Examples",
             buffer.getvalue(),
             "examples.zip",
             help="Sample datasets for testing"
         )
-    
-    # File uploader
-    uploaded = st.file_uploader(
-        "Upload your data file",
-        type=["csv", "xlsx", "xls"],
-        help="CSV or Excel files up to 10 MB"
-    )
     
     # Forecast horizon
     horizon = st.number_input(
