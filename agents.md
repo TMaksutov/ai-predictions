@@ -11,7 +11,7 @@ This document provides instructions for AI agents working on this Time Series Fo
 - **Responsive Design**: All content fits on one page without scrolling
 - **Compact Header**: Reduced header size for better space utilization
 - **Interactive Visualization**: Real-time forecast plotting with dataset selection
-- **Dual Model Comparison**: Linear Regression vs Prophet RMSE benchmarking
+- **Prophet-Only Benchmarking**: RMSE benchmarking for Prophet model
 
 ### 📋 Project Structure
 ```
@@ -40,7 +40,7 @@ This document provides instructions for AI agents working on this Time Series Fo
 5. **Compact Design**: Use markdown headers (####) instead of st.subheader for space efficiency
 
 ### Dependency Management
-- **Core Dependencies**: streamlit, pandas, numpy, matplotlib, scikit-learn, prophet
+- **Core Dependencies**: streamlit, pandas, numpy, matplotlib, prophet
 - **Version Ranges**: Use semantic versioning with appropriate constraints
 - **Testing**: Ensure all dependencies work together in latest versions
 
@@ -99,11 +99,17 @@ This document provides instructions for AI agents working on this Time Series Fo
 - **Impact**: All future layout changes must maintain this structure
 - **Validation**: Run app and verify all content visible without scrolling
 
+### Update: 2025-08-15 - Prophet-Only + Click-to-Select
+- **Changed**: Removed Linear Regression code and docs; added dataset row click-to-select; updated README and agents.md
+- **Reason**: User requires Prophet-only benchmarking with dataset selection by clicking table rows
+- **Impact**: Simplifies dependencies and UI; selection synced to table
+- **Validation**: Run app, click a row in Benchmark Results to update the right-side visualization; verify no scikit-learn imports remain
+
 ## Future Development Guidelines
 
 ### Recommended Enhancements
 1. **Model Expansion**: Add more forecasting algorithms (ARIMA, LSTM, etc.)
-2. **Dataset Management**: Allow custom dataset uploads
+2. **Dataset Management**: Allow custom dataset uploads; ensure row click-to-select remains intuitive
 3. **Export Features**: Enable downloading of results and forecasts
 4. **Real-time Data**: Integration with live data sources
 5. **Advanced Metrics**: Additional evaluation metrics beyond RMSE

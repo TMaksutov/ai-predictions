@@ -1,15 +1,16 @@
 # Time Series Forecasting Benchmark
 
-A Streamlit web application for benchmarking time series forecasting models on sample datasets. This application compares Linear Regression with Polynomial Features and Prophet forecasting models using an optimized one-page layout.
+A Streamlit web application for benchmarking Prophet time series forecasting on sample datasets using an optimized one-page layout.
 
 ## Overview
 
 This application provides:
-- **Benchmark comparison** of Linear Regression and Prophet models
+- **Benchmark results** for Prophet model only
 - **RMSE evaluation** on the last 20% of each dataset (holdout test set)
 - **Interactive visualization** of forecasts for selected datasets
 - **10 diverse sample datasets** covering different time series patterns
 - **Optimized layout** with table on left, graph on right, all content fitting on one page
+- **Click-to-select**: Pick a dataset by clicking its row in the Benchmark Results table
 
 ## Layout Features
 
@@ -20,9 +21,8 @@ This application provides:
 
 ## Features
 
-### Benchmark Models
-1. **Linear Regression + Polynomial Features**: Uses time-based features (day of week, month, hour, day of year) with polynomial transformations
-2. **Prophet**: Facebook's Prophet model with automatic seasonality detection
+### Benchmark Model
+- **Prophet**: Automatic seasonality detection with configurable priors
 
 ### Sample Datasets
 The application includes 10 synthetic datasets with various characteristics:
@@ -36,7 +36,7 @@ The application includes 10 synthetic datasets with various characteristics:
 - **Training**: Uses the first 80% of each dataset
 - **Testing**: Evaluates on the last 20% of each dataset
 - **Metric**: Root Mean Square Error (RMSE)
-- **Comparison**: Side-by-side RMSE results for both models
+- **Metric Only**: RMSE results for Prophet
 
 ## Installation
 
@@ -54,9 +54,9 @@ streamlit run streamlit_app.py
 ```
 
 The application will:
-1. Display a benchmark table comparing RMSE results for both models across all 10 datasets (left column)
-2. Allow you to select a specific dataset to view its forecast visualization (right column)
-3. Show the forecast plot with confidence intervals in a compact layout
+1. Display a benchmark table with Prophet RMSE across all 10 datasets (left column)
+2. Select a dataset by clicking its row in the Benchmark Results table (or via the selector)
+3. Show the Prophet forecast plot with confidence intervals in a compact layout
 
 ## Dependencies
 
@@ -64,9 +64,7 @@ The application will:
 - `pandas`: Data manipulation and analysis (>=2.1.0)
 - `numpy`: Numerical computing (>=1.24.0)
 - `matplotlib`: Plotting and visualization (>=3.7.0)
-- `scikit-learn`: Machine learning models and metrics (>=1.3.0)
-- `scipy`: Scientific computing (>=1.10.0)
-- `prophet`: Facebook's forecasting tool (>=1.1.4)
+- `prophet`: Forecasting tool (>=1.1.4)
 - `plotly`: Additional plotting capabilities (>=5.15.0)
 
 ### Updating Dependencies
@@ -130,11 +128,6 @@ All datasets are synthetically generated with known patterns for benchmarking pu
 - **Length**: 150-500 data points per dataset
 
 ## Model Details
-
-### Linear Regression Model
-- Uses temporal features: time index, day of week, month, hour, day of year (sin/cos encoded)
-- Applies polynomial feature transformation (degree 2)
-- Fallback to simple linear regression if polynomial fitting fails
 
 ### Prophet Model
 - Automatic seasonality detection (daily, weekly, yearly)

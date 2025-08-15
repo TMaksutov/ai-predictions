@@ -239,21 +239,36 @@ with col1:
     with st.spinner("Computing benchmark..."):
         bench_df = _compute_benchmark(tuple(dataset_names))
     
-    # Display table with compact styling
-    st.dataframe(bench_df, use_container_width=True, height=400)
-    
-    # Selection widget
-    st.markdown("#### Select Dataset")
-    selected = st.selectbox("Choose dataset to visualize:", dataset_names, index=0, label_visibility="collapsed")
+    # Click-to-select via checkbox column
+    if "selected_dataset" not in st.session_state:
+        st.session_state["selected_dataset"] = dataset_names[0]
+    bench_df = bench_df.copy()
+    bench_df.insert(0, "Select", bench_df["Dataset"] == st.session_state["selected_dataset"])
+    edited_df = st.data_editor(
+        bench_df,
+        use_container_width=True,
+        height=400,
+        hide_index=True,
+        column_config={
+            "Select": st.column_config.CheckboxColumn("Select", help="Click to visualize this dataset", default=False),
+            "Dataset": st.column_config.TextColumn("Dataset", disabled=True),
+            "Prophet RMSE": st.column_config.TextColumn("Prophet RMSE", disabled=True),
+            "Error": st.column_config.TextColumn("Error", disabled=True),
+        },
+    )
+    selected_rows = edited_df[edited_df["Select"] == True]
+    if len(selected_rows) > 0:
+        st.session_state["selected_dataset"] = selected_rows["Dataset"].iloc[-1]
 
 with col2:
     st.markdown("#### Forecast Visualization")
     
+    selected = st.session_state.get("selected_dataset")
     if selected:
         with st.spinner(f"Generating forecast..."):
             raw_df, metadata = _load_dataset(selected)
             series_df = _prepare_single_series(raw_df)
-            rmse, forecast, test_df = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
+            rmse, forecast, test_df = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
 
         # Compact info display
         st.caption(f"**{selected}** | RMSE: {rmse:.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
