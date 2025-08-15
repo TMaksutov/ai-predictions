@@ -12,9 +12,6 @@ st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
 st.markdown("### Time Series Forecasting Benchmark")
 st.caption("Prophet NRMSE on 10 sample datasets")
 
-# Parameter optimization toggle
-optimize_params = st.checkbox("Optimize Prophet parameters (slower but better results)", value=True)
-
 
 def _generate_sample_datasets() -> Dict[str, pd.DataFrame]:
     """Generate 10 diverse sample time series datasets for benchmarking."""
@@ -159,7 +156,7 @@ def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _compute_benchmark(dataset_names: Tuple[str, ...], optimize_parameters: bool = True) -> pd.DataFrame:
+def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
     """Compute benchmark results for all datasets."""
     results = []
     for name in dataset_names:
@@ -167,8 +164,8 @@ def _compute_benchmark(dataset_names: Tuple[str, ...], optimize_parameters: bool
             raw_df, _ = _load_dataset(name)
             series_df = _prepare_single_series(raw_df)
             
-            # Compute Prophet NRMSE
-            prophet_nrmse, _, _ = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=optimize_parameters)
+            # Compute Prophet NRMSE without optimization
+            prophet_nrmse, _, _ = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=False)
             
             results.append({
                 "Dataset": name,
@@ -186,13 +183,13 @@ def _compute_benchmark(dataset_names: Tuple[str, ...], optimize_parameters: bool
 # Load dataset names
 dataset_names = _get_dataset_names()
 
-# Create two columns layout
-col1, col2 = st.columns([1, 1.2])
+# Create two columns layout - aligned
+col1, col2 = st.columns([1, 1])
 
 with col1:
     st.markdown("#### Benchmark Results")
     with st.spinner("Computing benchmark..."):
-        bench_df = _compute_benchmark(tuple(dataset_names), optimize_parameters=optimize_params)
+        bench_df = _compute_benchmark(tuple(dataset_names))
     
     # Click-to-select via checkbox column
     if "selected_dataset" not in st.session_state:
@@ -223,7 +220,7 @@ with col2:
         with st.spinner(f"Generating forecast..."):
             raw_df, metadata = _load_dataset(selected)
             series_df = _prepare_single_series(raw_df)
-            nrmse, forecast, test_df = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=optimize_params)
+            nrmse, forecast, test_df = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=False)
 
         # Compact info display
         st.caption(f"**{selected}** | NRMSE: {nrmse:.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
@@ -257,18 +254,3 @@ with col2:
         fig.tight_layout()
 
         st.pyplot(fig)
-        
-        # Compact metrics in columns
-        col2a, col2b, col2c, col2d = st.columns(4)
-        with col2a:
-            st.metric("NRMSE", f"{nrmse:.3f}", label_visibility="visible")
-        with col2b:
-            st.metric("Train", f"{len(series_df) - len(test_df)}")
-        with col2c:
-            st.metric("Test", f"{len(test_df)}")
-        with col2d:
-            st.metric("Mean", f"{series_df['y'].mean():.1f}")
-
-# Bottom info - more compact
-st.markdown("---")
-st.caption("💡 10 synthetic datasets with different patterns (trends, seasonality, cycles) for forecasting performance testing.")
