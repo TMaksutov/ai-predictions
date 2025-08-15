@@ -9,6 +9,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error
+from prophet import Prophet
 
 
 st.set_page_config(page_title="Time Series Forecasting Benchmark", layout="wide")
@@ -246,6 +247,49 @@ def _compute_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0
     return rmse, forecast, test_df
 
 
+def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+    """
+    Compute Prophet forecast and RMSE on test set.
+    
+    Args:
+        series_df: DataFrame with 'ds' and 'y' columns
+        test_fraction: Fraction of data to use for testing
+        
+    Returns:
+        tuple: (rmse, forecast_df, test_df)
+    """
+    # Split data
+    test_size = int(len(series_df) * test_fraction)
+    train_df = series_df.iloc[:-test_size].copy()
+    test_df = series_df.iloc[-test_size:].copy()
+    
+    # Train Prophet model
+    model = Prophet(
+        daily_seasonality=True,
+        weekly_seasonality=True,
+        yearly_seasonality=True,
+        changepoint_prior_scale=0.05,
+        seasonality_prior_scale=10.0
+    )
+    
+    # Suppress Prophet output
+    import logging
+    logging.getLogger('prophet').setLevel(logging.WARNING)
+    
+    model.fit(train_df)
+    
+    # Create future dataframe for forecasting
+    future = model.make_future_dataframe(periods=test_size)
+    forecast = model.predict(future)
+    
+    # Calculate RMSE on test set
+    yhat_test = forecast['yhat'].iloc[-test_size:].values
+    y_true = test_df['y'].to_numpy()
+    rmse = float(np.sqrt(mean_squared_error(y_true, yhat_test)))
+    
+    return rmse, forecast, test_df
+
+
 @st.cache_data(show_spinner=False)
 def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
     """Compute benchmark results for all datasets."""
@@ -254,10 +298,25 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
         try:
             raw_df, _ = _load_dataset(name)
             series_df = _prepare_single_series(raw_df)
-            rmse, _, _ = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
-            results.append({"Dataset": name, "RMSE": f"{rmse:.4f}"})
+            
+            # Compute Linear Regression RMSE
+            lr_rmse, _, _ = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
+            
+            # Compute Prophet RMSE
+            prophet_rmse, _, _ = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
+            
+            results.append({
+                "Dataset": name, 
+                "Linear Regression RMSE": f"{lr_rmse:.4f}",
+                "Prophet RMSE": f"{prophet_rmse:.4f}"
+            })
         except Exception as e:
-            results.append({"Dataset": name, "RMSE": "Error", "Error": str(e)[:50]})
+            results.append({
+                "Dataset": name, 
+                "Linear Regression RMSE": "Error", 
+                "Prophet RMSE": "Error",
+                "Error": str(e)[:50]
+            })
     return pd.DataFrame(results)
 
 
@@ -265,7 +324,7 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 dataset_names = _get_dataset_names()
 
 # Benchmark table
-st.subheader("Benchmark Results (Linear Regression RMSE on last 20%)")
+st.subheader("Benchmark Results (Linear Regression and Prophet RMSE on last 20%)")
 with st.spinner("Computing benchmark for 10 sample datasets..."):
     bench_df = _compute_benchmark(tuple(dataset_names))
 
