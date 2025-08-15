@@ -4,14 +4,17 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_squared_error
 
-from prophet import Prophet
 import tsdl
 
 
-st.set_page_config(page_title="Monash Prophet Benchmark", layout="wide")
-st.title("Prophet Benchmark — Monash (first 10 datasets)")
-st.caption("RMSE on last 20% holdout. Select a dataset to view its forecast plot.")
+st.set_page_config(page_title="Monash Forecasting Benchmark", layout="wide")
+st.title("Time Series Forecasting Benchmark — Monash (first 10 datasets)")
+st.caption("RMSE on last 20% holdout using Linear Regression + Polynomial Features. Select a dataset to view its forecast plot.")
 
 
 def _first_10_dataset_names() -> List[str]:
@@ -97,7 +100,11 @@ def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
     return sub
 
 
-def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2):
+def _compute_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: float = 0.2):
+    """
+    Compute forecasts using Linear Regression with polynomial features and time-based features.
+    This is a reliable alternative to Prophet that works well in most deployment environments.
+    """
     n = len(series_df)
     if n < 10:
         raise ValueError("Series too short for 20% holdout evaluation.")
@@ -106,16 +113,70 @@ def _compute_prophet_forecast_and_rmse(series_df: pd.DataFrame, test_fraction: f
     train_df = series_df.iloc[:-test_size].copy()
     test_df = series_df.iloc[-test_size:].copy()
 
-    model = Prophet()
-    model.fit(train_df)
-
-    # Predict exactly on observed timestamps to avoid frequency assumptions
-    future = pd.DataFrame({"ds": series_df["ds"]})
-    forecast = model.predict(future)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
-
-    yhat_test = forecast["yhat"].iloc[-test_size:].to_numpy()
-    y_true = test_df["y"].to_numpy()
-    rmse = float(np.sqrt(np.mean((yhat_test - y_true) ** 2)))
+    # Create time-based features
+    def create_features(df):
+        features_df = df.copy()
+        features_df['timestamp'] = features_df['ds'].astype('int64') // 10**9  # Unix timestamp
+        
+        # Normalize timestamp
+        min_ts = features_df['timestamp'].min()
+        features_df['time_idx'] = features_df['timestamp'] - min_ts
+        features_df['time_idx'] = features_df['time_idx'] / features_df['time_idx'].std()
+        
+        # Add cyclical features
+        features_df['day_of_week'] = features_df['ds'].dt.dayofweek
+        features_df['month'] = features_df['ds'].dt.month
+        features_df['hour'] = features_df['ds'].dt.hour
+        
+        # Sine/cosine encoding for cyclical features
+        features_df['dow_sin'] = np.sin(2 * np.pi * features_df['day_of_week'] / 7)
+        features_df['dow_cos'] = np.cos(2 * np.pi * features_df['day_of_week'] / 7)
+        features_df['month_sin'] = np.sin(2 * np.pi * features_df['month'] / 12)
+        features_df['month_cos'] = np.cos(2 * np.pi * features_df['month'] / 12)
+        
+        return features_df
+    
+    # Prepare features
+    train_features = create_features(train_df)
+    
+    # Select feature columns
+    feature_cols = ['time_idx', 'dow_sin', 'dow_cos', 'month_sin', 'month_cos']
+    
+    X_train = train_features[feature_cols].values
+    y_train = train_features['y'].values
+    
+    # Create polynomial features and fit model
+    try:
+        # Try polynomial features with linear regression
+        model = Pipeline([
+            ('poly', PolynomialFeatures(degree=2, include_bias=False)),
+            ('linear', LinearRegression())
+        ])
+        model.fit(X_train, y_train)
+    except:
+        # Fallback to simple linear regression
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+    
+    # Create features for full series to get forecast
+    full_features = create_features(series_df)
+    X_full = full_features[feature_cols].values
+    
+    # Predict
+    y_pred = model.predict(X_full)
+    
+    # Create forecast dataframe
+    forecast = pd.DataFrame({
+        'ds': series_df['ds'],
+        'yhat': y_pred,
+        'yhat_lower': y_pred * 0.95,  # Simple confidence interval
+        'yhat_upper': y_pred * 1.05
+    })
+    
+    # Calculate RMSE on test set
+    yhat_test = y_pred[-test_size:]
+    y_true = test_df['y'].to_numpy()
+    rmse = float(np.sqrt(mean_squared_error(y_true, yhat_test)))
 
     return rmse, forecast, test_df
 
@@ -127,7 +188,7 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
         try:
             raw_df, _ = _load_dataset(name)
             series_df = _prepare_single_series(raw_df)
-            rmse, _, _ = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
+            rmse, _, _ = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
             results.append({"Dataset": name, "RMSE": rmse})
         except Exception as e:
             results.append({"Dataset": name, "RMSE": np.nan, "Error": str(e)})
@@ -141,7 +202,7 @@ if not dataset_names:
     st.stop()
 
 # Benchmark table
-st.subheader("Benchmark (Prophet RMSE on last 20%)")
+st.subheader("Benchmark (Linear Regression RMSE on last 20%)")
 with st.spinner("Computing benchmark for first 10 datasets..."):
     bench_df = _compute_benchmark(tuple(dataset_names))
 
@@ -155,7 +216,7 @@ if selected:
     with st.spinner(f"Loading and forecasting: {selected}"):
         raw_df, _ = _load_dataset(selected)
         series_df = _prepare_single_series(raw_df)
-        rmse, forecast, test_df = _compute_prophet_forecast_and_rmse(series_df, test_fraction=0.2)
+        rmse, forecast, test_df = _compute_forecast_and_rmse(series_df, test_fraction=0.2)
 
     st.caption(f"RMSE: {rmse:.4f}")
 
@@ -166,7 +227,7 @@ if selected:
 
     # Only show forecast line for the test segment
     test_pred = forecast.tail(len(test_df))
-    ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Prophet forecast (test)")
+    ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast (test)")
 
     # Split marker
     ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", label="Train/Test split")
