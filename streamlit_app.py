@@ -10,6 +10,7 @@ from ts_core import (
     load_table,
     infer_date_and_target,
     forecast_linear_safe,
+    forecast_multiple_models,
     DataError,
     detect_interval,
 )
@@ -139,13 +140,53 @@ with st.sidebar:
 # Forecasting
 if st.sidebar.button("Generate Forecast", type="primary"):
     try:
-        with st.spinner("Generating forecast..."):
-            result = forecast_linear_safe(df, date_col, target_col, int(horizon))
+        with st.spinner("Generating forecast with multiple models..."):
+            result, metrics = forecast_multiple_models(df, date_col, target_col, int(horizon))
         
-        st.subheader("Forecast Results")
+        st.subheader("Forecast Results - Multiple Models")
         
-        # Chart
-        st.line_chart(result.set_index("date")[["y", "yhat"]])
+        # Show model performance metrics
+        st.subheader("Model Performance (20% Test Data)")
+        st.dataframe(metrics, use_container_width=True)
+        
+        # Chart with all models
+        st.subheader("Forecast Comparison")
+        
+        # Prepare data for plotting
+        plot_data = result.set_index("date")
+        
+        # Get forecast columns
+        forecast_cols = [col for col in plot_data.columns if col.endswith('_forecast')]
+        
+        # Create the main chart
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Plot historical data
+        ax.plot(plot_data.index[:len(df)], plot_data['actual'][:len(df)], 
+                label='Historical', color='black', linewidth=2)
+        
+        # Plot forecasts
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
+        for i, col in enumerate(forecast_cols):
+            model_name = col.replace('_forecast', '')
+            color = colors[i % len(colors)]
+            ax.plot(plot_data.index[len(df):], plot_data[col][len(df):], 
+                    label=f'{model_name}', color=color, linewidth=2, linestyle='--')
+        
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Value')
+        ax.set_title('Time Series Forecast - Multiple Models')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Rotate x-axis labels for better readability
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        st.pyplot(fig)
         
         # Details
         with st.expander("Forecast Details"):
@@ -155,9 +196,14 @@ if st.sidebar.button("Generate Forecast", type="primary"):
         st.download_button(
             "Download Predictions",
             result.to_csv(index=False).encode("utf-8"),
-            file_name="predictions.csv",
+            file_name="predictions_multiple_models.csv",
             mime="text/csv",
         )
+        
+        # Show best model
+        if not metrics.empty and 'RMSE' in metrics.columns:
+            best_model = metrics.iloc[0]['Model']
+            st.success(f"Best performing model: {best_model}")
         
     except DataError as e:
         st.error(str(e))
@@ -165,7 +211,7 @@ if st.sidebar.button("Generate Forecast", type="primary"):
         st.error(f"Unexpected error: {e}")
 
 # Footer
-st.caption("Baseline uses scikit-learn LinearRegression with fallback to last value if modeling fails.")
+st.caption("Multiple models: Naive, Seasonal Naive, Linear Trend, Exponential Smoothing, Moving Average, and Polynomial Trend. Models are evaluated on 20% test data for stability comparison.")
 
 # Deploy time
 deploy_time = get_deploy_time()

@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+from ts_models import TimeSeriesModels
 
 class DataError(ValueError):
     """Raised for user-facing, recoverable data errors."""
@@ -240,4 +241,57 @@ def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horiz
         })
         
         return result
+
+def forecast_multiple_models(df: pd.DataFrame, date_col: str, target_col: str, horizon: int, test_size: float = 0.2) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Forecast using multiple models with evaluation on test data."""
+    if horizon < 1 or horizon > 1000:
+        raise DataError("Invalid horizon. Must be between 1 and 1000.")
+    
+    # Check if dataframe is empty
+    if df.empty:
+        raise DataError("DataFrame is empty")
+    
+    df_clean = _prepare_data(df, date_col, target_col)
+    
+    # Handle small datasets
+    if len(df_clean) < 10:
+        raise DataError("Dataset too small for multiple model evaluation. Need at least 10 data points.")
+    
+    # Set date as index for easier manipulation
+    df_indexed = df_clean.set_index(date_col)
+    
+    # Initialize models
+    ts_models = TimeSeriesModels()
+    
+    try:
+        # Fit all models and get predictions
+        predictions = ts_models.fit_all_models(df_indexed, target_col, test_size)
+        
+        # Evaluate models
+        metrics = ts_models.evaluate_models(target_col)
+        
+        # Get forecast dataframe with all models
+        forecast_df = ts_models.get_forecast_dataframe(df_indexed, target_col, horizon)
+        
+        # Reset index to make date a column again
+        forecast_df = forecast_df.reset_index()
+        if 'index' in forecast_df.columns:
+            forecast_df = forecast_df.drop('index', axis=1)
+        
+        return forecast_df, metrics
+        
+    except Exception as e:
+        # Fallback to simple linear forecast
+        simple_forecast = forecast_linear_safe(df, date_col, target_col, horizon)
+        
+        # Create dummy metrics for fallback
+        dummy_metrics = pd.DataFrame({
+            'Model': ['Linear (Fallback)'],
+            'MAE': [np.nan],
+            'MSE': [np.nan],
+            'RMSE': [np.nan],
+            'MAPE (%)': [np.nan]
+        })
+        
+        return simple_forecast, dummy_metrics
 
