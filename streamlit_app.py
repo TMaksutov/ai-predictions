@@ -46,6 +46,7 @@ DATA_DIR = Path(__file__).parent / "test_files"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MONASH_DIR = DATA_DIR / "monash"
 BENCHMARK_HORIZON = 12
+MONASH_SAMPLE_DIR = DATA_DIR / "monash_sample"
 
 
 def _list_monash_files(limit: int = 50):
@@ -107,21 +108,43 @@ def _compute_benchmark_rows() -> list:
             except Exception:
                 continue
     else:
-        monash_path = DATA_DIR / "monash_sample.csv"
-        if monash_path.exists():
+        # If no full Monash directory, try a 'monash_sample' directory with chosen sample CSVs
+        if MONASH_SAMPLE_DIR.exists():
             try:
-                with monash_path.open("rb") as fh:
-                    df_monash = load_table(fh)
-                dcol_m, tcol_m = infer_date_and_target(df_monash)
-                if dcol_m is not None and tcol_m is not None:
-                    _, mtx_m = forecast_multiple_models(df_monash, dcol_m, tcol_m, int(BENCHMARK_HORIZON))
+                sample_files = sorted(MONASH_SAMPLE_DIR.rglob("*.csv"), key=lambda p: p.stat().st_size)[:50]
+            except Exception:
+                sample_files = []
+            for mpath in sample_files:
+                try:
+                    with mpath.open("rb") as fh:
+                        df_m = load_table(fh)
+                    dcol_m, tcol_m = infer_date_and_target(df_m)
+                    if dcol_m is None or tcol_m is None:
+                        continue
+                    _, mtx_m = forecast_multiple_models(df_m, dcol_m, tcol_m, int(BENCHMARK_HORIZON))
                     rmse_map_m = {row['Model']: row['RMSE'] for _, row in mtx_m.iterrows()}
-                    row_m = {"Dataset": "Monash (sample)"}
+                    row_m = {"Dataset": f"Monash (sample)/{mpath.relative_to(MONASH_SAMPLE_DIR)}"}
                     for m in model_order:
                         row_m[m] = rmse_map_m.get(m, float("nan"))
                     rows.append(row_m)
-            except Exception:
-                pass
+                except Exception:
+                    continue
+        else:
+            monash_path = DATA_DIR / "monash_sample.csv"
+            if monash_path.exists():
+                try:
+                    with monash_path.open("rb") as fh:
+                        df_monash = load_table(fh)
+                    dcol_m, tcol_m = infer_date_and_target(df_monash)
+                    if dcol_m is not None and tcol_m is not None:
+                        _, mtx_m = forecast_multiple_models(df_monash, dcol_m, tcol_m, int(BENCHMARK_HORIZON))
+                        rmse_map_m = {row['Model']: row['RMSE'] for _, row in mtx_m.iterrows()}
+                        row_m = {"Dataset": "Monash (sample)"}
+                        for m in model_order:
+                            row_m[m] = rmse_map_m.get(m, float("nan"))
+                        rows.append(row_m)
+                except Exception:
+                    pass
 
     return rows
 
@@ -153,7 +176,12 @@ with st.spinner("Loading benchmark results..."):
     if rows:
         benchmark_df = pd.DataFrame(rows)
         st.dataframe(benchmark_df, use_container_width=True)
-        monash_rows = [r["Dataset"] for r in rows if isinstance(r.get("Dataset"), str) and r["Dataset"].startswith("Monash/")]
+        monash_rows = [
+            r["Dataset"]
+            for r in rows
+            if isinstance(r.get("Dataset"), str)
+            and (r["Dataset"].startswith("Monash/") or r["Dataset"].startswith("Monash (sample)/"))
+        ]
         if monash_rows:
             with st.expander("Monash files included (up to 50 smallest)"):
                 st.write("\n".join(str(x) for x in monash_rows))
