@@ -3,204 +3,151 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-import re
 
 class DataError(ValueError):
     """Raised for user-facing, recoverable data errors."""
 
-_SPACE_RE = re.compile(r"\s+")
-
-def _clean_string(s: str) -> str:
-    s = s.strip().strip("\ufeff").strip('"').strip("'")
-    return _SPACE_RE.sub(" ", s)
-
 def load_table(uploaded_file) -> pd.DataFrame:
-    """Load user data from CSV/Excel or generic delimited text safely."""
+    """Load user data from CSV/Excel safely."""
     if uploaded_file is None:
         raise DataError("No file provided.")
+    
     name = (getattr(uploaded_file, "name", "") or "").lower()
+    
     try:
-        if name.endswith(".xlsx"):
-            read = lambda f, **k: pd.read_excel(f, engine="openpyxl", **k)
-        elif name.endswith(".xls"):
-            read = lambda f, **k: pd.read_excel(f, engine="xlrd", **k)
-        else:
-            read = lambda f, **k: pd.read_csv(f, sep=None, engine="python",
-                                             on_bad_lines="skip", **k)
         uploaded_file.seek(0)
-        df = read(uploaded_file)
-        cols = pd.Index(df.columns)
-        def _looks_like_data(vals):
-            num = pd.to_numeric(vals, errors="coerce").notna().sum()
-            dt = pd.to_datetime(vals, errors="coerce").notna().sum()
-            return (num + dt) / len(vals) > 0.5
-        if list(cols) == list(range(df.shape[1])) or _looks_like_data(cols):
-            uploaded_file.seek(0)
-            df = read(uploaded_file, header=None)
+        if name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(uploaded_file, engine="openpyxl" if name.endswith(".xlsx") else "xlrd")
+        else:
+            df = pd.read_csv(uploaded_file, sep=None, engine="python", on_bad_lines="skip")
+        
+        # Clean column names
+        df.columns = [str(c).strip().strip('"\'') for c in df.columns]
+        
+        # Handle files without headers
+        if list(df.columns) == list(range(df.shape[1])):
             df.columns = [f"col{i}" for i in range(df.shape[1])]
+            
     except Exception as e:
         raise DataError(f"Failed to read file: {e}")
-    if df is None or df.empty:
+    
+    if df.empty:
         raise DataError("File is empty.")
-    df.columns = [_clean_string(str(c)) for c in df.columns]
-    for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = df[c].map(lambda x: _clean_string(x) if isinstance(x, str) else x)
+    
     return df
 
 def infer_date_and_target(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
-    date_col, target_col = None, None
-    for c in df.columns:
-        if pd.to_datetime(df[c], errors="coerce").notna().sum() >= max(3, int(0.2 * len(df))):
-            date_col = c
+    """Auto-detect date and target columns."""
+    date_col = None
+    target_col = None
+    
+    # Find date column
+    for col in df.columns:
+        if pd.to_datetime(df[col], errors="coerce").notna().sum() >= max(3, int(0.2 * len(df))):
+            date_col = col
             break
-    for c in df.columns:
-        if c != date_col and pd.api.types.is_numeric_dtype(df[c]):
-            target_col = c
+    
+    # Find numeric target column
+    for col in df.columns:
+        if col != date_col and pd.api.types.is_numeric_dtype(df[col]):
+            target_col = col
             break
+    
     return date_col, target_col
 
-def _prepare(df: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame:
-    s = df.copy()
-    s[date_col] = pd.to_datetime(s[date_col], errors="coerce")
-    s[target_col] = pd.to_numeric(s[target_col], errors="coerce")
-    s = s[[date_col, target_col]].dropna().sort_values(date_col)
-    s = s[~s[date_col].duplicated(keep="last")]
-    return s
-
-def _infer_offset(dates: pd.Series):
-    try:
-        freq = pd.infer_freq(dates)
-        if freq:
-            return pd.tseries.frequencies.to_offset(freq)
-    except Exception:
-        pass
-    diffs = dates.diff().dropna()
-    if len(diffs):
-        med = diffs.median()
-        try:
-            return pd.tseries.frequencies.to_offset(med)
-        except Exception:
-            if hasattr(med, "days"):
-                days = int(max(1, med.days))
-                return pd.DateOffset(days=days)
-    return pd.DateOffset(days=1)
+def _prepare_data(df: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame:
+    """Prepare data for forecasting."""
+    df_clean = df.copy()
+    df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors="coerce")
+    df_clean[target_col] = pd.to_numeric(df_clean[target_col], errors="coerce")
+    
+    # Remove duplicates and sort
+    df_clean = df_clean[[date_col, target_col]].dropna().sort_values(date_col)
+    df_clean = df_clean[~df_clean[date_col].duplicated(keep="last")]
+    
+    return df_clean
 
 def detect_interval(dates: pd.Series) -> str:
-    """Return a human-friendly description of the series interval."""
-    s = pd.to_datetime(dates, errors="coerce").dropna()
-    if len(s) < 2:
+    """Detect time series interval using pandas."""
+    dates_clean = pd.to_datetime(dates, errors="coerce").dropna()
+    
+    if len(dates_clean) < 2:
         return "unknown"
-    off = _infer_offset(s)
-    off = pd.tseries.frequencies.to_offset(off)
-    code = off.freqstr.upper()
-    base = ''.join(filter(str.isalpha, code))
-    names = {
-        "L": "milliseconds",
-        "S": "seconds",
-        "T": "minutes",
-        "H": "hours",
-        "D": "days",
-        "W": "weeks",
-        "M": "months",
-        "Q": "quarters",
-        "A": "years",
-    }
-    human = names.get(base, code)
-    return f"{code} ({human})"
+    
+    # Use pandas built-in frequency inference
+    try:
+        freq = pd.infer_freq(dates_clean)
+        if freq:
+            return freq
+    except:
+        pass
+    
+    # Fallback to median difference
+    diffs = dates_clean.diff().dropna()
+    if len(diffs) > 0:
+        median_diff = diffs.median()
+        if hasattr(median_diff, "days"):
+            days = int(max(1, median_diff.days))
+            return f"{days}D"
+    
+    return "1D"
 
 def forecast_linear_safe(df: pd.DataFrame, date_col: str, target_col: str, horizon: int) -> pd.DataFrame:
-    """
-    Linear regression on integer time with robust fallback to "last value" if anything fails.
-    Returns columns: date, y, yhat, kind (historical/forecast).
-    """
-    s = _prepare(df, date_col, target_col)
-    n = len(s)
-    X = np.arange(n).reshape(-1, 1)
-    y = s[target_col].to_numpy(dtype=float)
-
-    def _naive():
-        off = _infer_offset(s[date_col])
-        future = [s[date_col].iloc[-1] + off * (i + 1) for i in range(horizon)]
-        return pd.DataFrame({
-            "date": pd.concat([s[date_col], pd.Series(future)], ignore_index=True),
-            "y": pd.concat([s[target_col], pd.Series([np.nan]*horizon)], ignore_index=True),
-            "yhat": list(s[target_col].astype(float)) + [float(s[target_col].iloc[-1])] * horizon,
-            "kind": ["historical"]*n + ["forecast"]*horizon
-        })
-
+    """Simple linear regression forecast with fallback."""
+    if horizon < 1 or horizon > 1000:
+        raise DataError("Invalid horizon. Must be between 1 and 1000.")
+    
+    df_clean = _prepare_data(df, date_col, target_col)
+    
+    if len(df_clean) < 3:
+        raise DataError("Not enough data for forecasting.")
+    
+    # Prepare features
+    X = np.arange(len(df_clean)).reshape(-1, 1)
+    y = df_clean[target_col].values
+    
     try:
-        if n < 3 or horizon < 1 or horizon > 10000 or not np.isfinite(y).all():
-            raise DataError("Invalid horizon or values.")
-        model = LinearRegression().fit(X, y)
-        fut = np.arange(n, n + horizon).reshape(-1, 1)
-        yhat = model.predict(fut).astype(float)
-        hist_min, hist_max = float(np.nanmin(y)), float(np.nanmax(y))
-        span = max(1.0, hist_max - hist_min)
-        yhat = np.clip(yhat, hist_min - 5*span, hist_max + 5*span)
-        off = _infer_offset(s[date_col])
-        future = [s[date_col].iloc[-1] + off * (i + 1) for i in range(horizon)]
-        return pd.DataFrame({
-            "date": pd.concat([s[date_col], pd.Series(future)], ignore_index=True),
-            "y": pd.concat([s[target_col], pd.Series([np.nan]*horizon)], ignore_index=True),
-            "yhat": list(s[target_col].astype(float)) + list(yhat),
-            "kind": ["historical"]*n + ["forecast"]*horizon
+        # Fit linear model
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        # Generate future dates
+        last_date = df_clean[date_col].iloc[-1]
+        interval = detect_interval(df_clean[date_col])
+        future_dates = pd.date_range(start=last_date, periods=horizon + 1, freq=interval)[1:]
+        
+        # Predict
+        future_X = np.arange(len(df_clean), len(df_clean) + horizon).reshape(-1, 1)
+        predictions = model.predict(future_X)
+        
+        # Clip predictions to reasonable range
+        y_min, y_max = y.min(), y.max()
+        y_range = max(1.0, y_max - y_min)
+        predictions = np.clip(predictions, y_min - 2*y_range, y_max + 2*y_range)
+        
+        # Create result dataframe
+        result = pd.DataFrame({
+            "date": pd.concat([df_clean[date_col], pd.Series(future_dates)]),
+            "y": pd.concat([df_clean[target_col], pd.Series([np.nan] * horizon)]),
+            "yhat": pd.concat([df_clean[target_col], pd.Series(predictions)]),
+            "kind": ["historical"] * len(df_clean) + ["forecast"] * horizon
         })
+        
+        return result
+        
     except Exception:
-        return _naive()
-
-
-def train_regression_models(df: pd.DataFrame, target_col: str):
-    """Auto-detect feature types, encode and fit simple regressors."""
-    if target_col not in df.columns:
-        raise DataError("Target column not found.")
-    s = df.copy()
-    y = pd.to_numeric(s[target_col], errors="coerce")
-    X = s.drop(columns=[target_col])
-    for c in list(X.columns):
-        col = X[c]
-        if col.dtype == object:
-            low = col.astype(str).str.strip().str.lower()
-            bool_map = {"true": 1, "false": 0, "yes": 1, "no": 0}
-            if low.isin(bool_map).mean() > 0.8:
-                X[c] = low.map(bool_map)
-            else:
-                dt = pd.to_datetime(col, errors="coerce")
-                if dt.notna().sum() >= max(3, int(0.6 * len(dt))):
-                    X.drop(columns=[c], inplace=True)
-                    X[f"{c}_year"] = dt.dt.year
-                    X[f"{c}_month"] = dt.dt.month
-                    X[f"{c}_day"] = dt.dt.day
-                    X[f"{c}_dow"] = dt.dt.dayofweek
-                    X[f"{c}_hour"] = dt.dt.hour
-                else:
-                    X[c] = col.astype("category")
-        else:
-            X[c] = pd.to_numeric(col, errors="coerce")
-    X = pd.get_dummies(X, dummy_na=True)
-    data = pd.concat([X, y], axis=1).dropna(subset=[target_col])
-    y = data[target_col]
-    X = data.drop(columns=[target_col]).fillna(data.median())
-    split = int(len(X) * 0.7)
-    X_train, X_test = X.iloc[:split], X.iloc[split:]
-    y_train, y_test = y.iloc[:split], y.iloc[split:]
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-    models = {"RandomForest": RandomForestRegressor(random_state=0)}
-    try:
-        from lightgbm import LGBMRegressor
-        models["LightGBM"] = LGBMRegressor(random_state=0)
-    except Exception:
-        pass
-    out = {}
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        mse = mean_squared_error(y_test, preds)
-        out[name] = {
-            "MAE": float(mean_absolute_error(y_test, preds)),
-            "RMSE": float(mse ** 0.5),
-            "R2": float(r2_score(y_test, preds)),
-        }
-    return out
+        # Fallback to naive forecast (last value)
+        last_date = df_clean[date_col].iloc[-1]
+        last_value = df_clean[target_col].iloc[-1]
+        interval = detect_interval(df_clean[date_col])
+        future_dates = pd.date_range(start=last_date, periods=horizon + 1, freq=interval)[1:]
+        
+        result = pd.DataFrame({
+            "date": pd.concat([df_clean[date_col], pd.Series(future_dates)]),
+            "y": pd.concat([df_clean[target_col], pd.Series([np.nan] * horizon)]),
+            "yhat": pd.concat([df_clean[target_col], pd.Series([last_value] * horizon)]),
+            "kind": ["historical"] * len(df_clean) + ["forecast"] * horizon
+        })
+        
+        return result
 
