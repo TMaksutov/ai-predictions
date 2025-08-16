@@ -1,48 +1,37 @@
-# Time Series Forecasting Benchmark
+# Time Series Forecasting Benchmark (AutoTS)
 
-A Streamlit web application for benchmarking Prophet time series forecasting on sample datasets using an optimized one-page layout.
+A lightweight Streamlit app that benchmarks a minimal AutoTS setup on 10 synthetic time series and visualizes the forecast versus actuals.
 
 ## Overview
 
-This application provides:
-- **Benchmark results** for Prophet model only
-- **NRMSE evaluation** on the last 20% of each dataset (holdout test set)
-- **Interactive visualization** of forecasts for selected datasets
-- **10 diverse sample datasets** covering different time series patterns
-- **Optimized layout** with table on left, graph on right, all content fitting on one page
-- **Click-to-select**: Pick a dataset by clicking its row in the Benchmark Results table
+- **Models**: AutoTS with a small model list
+- **Metric**: NRMSE on the last 20% of each dataset (holdout)
+- **Datasets**: 10 diverse synthetic series
+- **UI**: One-page layout with a results table and a simple forecast plot
+
+## How to run
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+## What you’ll see
+
+- A table with per‑dataset NRMSE (computed inline without caching)
+- A dropdown to choose a dataset and a Matplotlib plot of actuals and forecast for the test window
 
 ## Dependencies
 
-- `streamlit`: Web application framework (>=1.29.0)
-- `pandas`: Data manipulation and analysis (>=2.1.0)
-- `numpy`: Numerical computing (>=1.24.0)
-- `matplotlib`: Plotting and visualization (>=3.7.0)
-- `prophet`: Forecasting tool (>=1.1.4)
-- `plotly`: Additional plotting capabilities (>=5.15.0)
+- streamlit (app)
+- pandas, numpy (data)
+- matplotlib (plot)
+- AutoTS (forecasting)
 
-### Updating Dependencies
+See `requirements.txt` for exact versions.
 
-To update dependencies in the future:
+## Notes
 
-1. **Check for updates**:
-   ```bash
-   pip list --outdated
-   ```
-
-2. **Update specific packages**:
-   ```bash
-   pip install --upgrade package_name
-   ```
-
-3. **Update requirements.txt**:
-   ```bash
-   pip freeze > requirements.txt
-   ```
-
-## Related Work
-
-This benchmarking application is inspired by the TSForecasting repository. For more comprehensive forecasting research and datasets, see:
-- **TSForecasting Repository**: [TSForecasting_README.md](TSForecasting_README.md)
-- **AI Agent Instructions**: [agents.md](agents.md)
-- **Monash Time Series Forecasting Archive**: https://forecastingdata.org/
+- No Streamlit caching or session state is used.
+- No spinners, confidence bands, or extra UI chrome.
+- External TSF/Prophet content was removed for clarity.
