@@ -166,6 +166,8 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 			series_df = _prepare_single_series(raw_df)
 			
 			row = {"Dataset": name}
+			# Add dataset row count
+			row["Rows"] = len(raw_df)
 			# Prophet
 			try:
 				p_nrmse, _, _ = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=False)
@@ -226,6 +228,7 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 		except Exception:
 			results.append({
 				"Dataset": name,
+				"Rows": 0,
 				"Prophet NRMSE": "Error",
 				"ARIMA NRMSE": "Error",
 				"Holt-Winters NRMSE": "Error",
@@ -252,6 +255,10 @@ if "selected_dataset" not in st.session_state:
 
 bench_df = bench_df.copy()
 bench_df.insert(0, "Select", bench_df["Dataset"] == st.session_state["selected_dataset"])
+# Ensure the "Rows" column appears immediately after the selection column
+if "Rows" in bench_df.columns:
+	rows_series = bench_df.pop("Rows")
+	bench_df.insert(1, "Rows", rows_series)
 edited_df = st.data_editor(
 	bench_df,
 	use_container_width=True,
@@ -259,6 +266,7 @@ edited_df = st.data_editor(
 	hide_index=True,
 	column_config={
 		"Select": st.column_config.CheckboxColumn("Select", help="Click to visualize this dataset", default=False),
+		"Rows": st.column_config.NumberColumn("Rows", disabled=True),
 		"Dataset": st.column_config.TextColumn("Dataset", disabled=True),
 		"Prophet NRMSE": st.column_config.TextColumn("Prophet NRMSE", disabled=True),
 		"ARIMA NRMSE": st.column_config.TextColumn("ARIMA NRMSE", disabled=True),
@@ -272,6 +280,7 @@ edited_df = st.data_editor(
 )
 selected_rows = edited_df[edited_df["Select"] == True]
 if len(selected_rows) > 0:
+	# Enforce single selection by keeping only the last selected row
 	st.session_state["selected_dataset"] = selected_rows["Dataset"].iloc[-1]
 
 # Forecast visualization moved after benchmark
