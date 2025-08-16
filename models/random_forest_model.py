@@ -2,6 +2,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
+import os
 
 
 def _build_features(history_df: pd.DataFrame) -> pd.DataFrame:
@@ -56,7 +57,8 @@ def forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> T
         if X_train.nunique().max() <= 1:
             return _naive_baseline(series_df, test_fraction)
 
-        model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+        n_jobs = min(2, os.cpu_count() or 1)
+        model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=n_jobs)
         model.fit(X_train, y_train)
 
         history = train_df.copy()

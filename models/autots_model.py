@@ -2,6 +2,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from autots import AutoTS
+import os
 
 
 def _naive_baseline(series_df: pd.DataFrame, test_fraction: float) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
@@ -36,12 +37,29 @@ def forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> T
         train_df = series_df.iloc[:-test_size].copy().reset_index(drop=True)
         test_df = series_df.iloc[-test_size:].copy().reset_index(drop=True)
 
+        # Build a conservative, fast model list and drop models with missing deps
+        base_models = ["GLM", "ETS", "SeasonalNaive", "LastValueNaive", "LightGBM"]
+        filtered_models = []
+        for name in base_models:
+            if name == "LightGBM":
+                try:
+                    import lightgbm  # noqa: F401
+                    filtered_models.append(name)
+                except Exception:
+                    continue
+            else:
+                filtered_models.append(name)
+
+        n_jobs = min(2, os.cpu_count() or 1)
         model = AutoTS(
             forecast_length=test_size,
             frequency='infer',
             ensemble='simple',
-            model_list='fast',
+            model_list=filtered_models,
+            transformer_list='minimal',
+            generations=3,
             num_validations=0,
+            n_jobs=n_jobs,
             random_seed=42,
         )
         fitted = model.fit(train_df, date_col='ds', value_col='y', id_col=None)
