@@ -127,7 +127,6 @@ def _get_dataset_names() -> List[str]:
 	]
 
 
-@st.cache_data(show_spinner=False)
 def _load_dataset(name: str) -> Tuple[pd.DataFrame, dict]:
 	"""Load a specific dataset by name."""
 	datasets = _generate_sample_datasets()
@@ -168,7 +167,6 @@ def _safe_model_call(module_name: str, func_name: str, *args, **kwargs):
 		return None
 
 
-@st.cache_data(show_spinner=False)
 def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 	"""Compute AutoTS benchmark results for all datasets."""
 	results = []
@@ -193,116 +191,22 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 	return pd.DataFrame(results)
 
 
-def _compute_benchmark_for_dataset(name: str) -> Dict[str, str]:
-	"""Compute AutoTS benchmark result for a single dataset."""
-	try:
-		raw_df, _ = _load_dataset(name)
-		series_df = _prepare_single_series(raw_df)
-		row = {"Dataset": name, "Rows": len(raw_df)}
-		try:
-			at_nrmse, _, _ = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
-			row["AutoTS NRMSE"] = f"{at_nrmse:.4f}"
-		except Exception:
-			row["AutoTS NRMSE"] = "Error"
-		return row
-	except Exception:
-		return {
-			"Dataset": name,
-			"Rows": 0,
-			"AutoTS NRMSE": "Error",
-		}
-
-
-def _naive_baseline(series_df: pd.DataFrame, test_fraction: float = 0.2):
-	"""Fallback forecaster: last value baseline."""
-	n = len(series_df)
-	test_size = max(1, int(n * test_fraction)) if n > 1 else 1
-	train_df = series_df.iloc[:-test_size].copy() if n > test_size else series_df.iloc[:0].copy()
-	test_df = series_df.iloc[-test_size:].copy()
-	last_value = float(train_df['y'].iloc[-1]) if len(train_df) > 0 else float(series_df['y'].iloc[0])
-	yhat = np.full(len(test_df), last_value, dtype=float)
-	forecast_df = pd.DataFrame({
-		'ds': test_df['ds'].to_numpy(),
-		'yhat': yhat,
-		'yhat_lower': yhat,
-		'yhat_upper': yhat,
-	})
-	y_true = test_df['y'].to_numpy() if len(test_df) > 0 else np.array([last_value], dtype=float)
-	rmse = float(np.sqrt(np.mean((y_true - forecast_df['yhat'].to_numpy()) ** 2)))
-	y_range = np.max(y_true) - np.min(y_true) if len(y_true) > 0 else 0.0
-	nrmse = rmse / y_range if y_range > 0 else rmse
-	return nrmse, forecast_df, test_df
-
-
 # Load dataset names
 dataset_names = _get_dataset_names()
 
-# Initialize selection and cache for per-dataset benchmark results
-if "selected_dataset" not in st.session_state:
-	st.session_state["selected_dataset"] = dataset_names[0]
-if "bench_cache" not in st.session_state:
-	st.session_state["bench_cache"] = {}
-
-# Compute benchmark ONLY for the currently selected dataset and cache it
-current_selected = st.session_state["selected_dataset"]
 st.markdown("#### Benchmark Results")
-with st.spinner(f"Computing benchmark for {current_selected}..."):
-	if current_selected not in st.session_state["bench_cache"]:
-		st.session_state["bench_cache"][current_selected] = _compute_benchmark_for_dataset(current_selected)
+bench_df = _compute_benchmark(tuple(dataset_names))
+st.dataframe(bench_df, use_container_width=True, height=420, hide_index=True)
 
-# Build table showing all datasets, but fill NRMSEs from cache only
-rows_for_table = []
-for name in dataset_names:
-	try:
-		raw_df, _ = _load_dataset(name)
-		row = {"Dataset": name, "Rows": len(raw_df)}
-	except Exception:
-		row = {"Dataset": name, "Rows": 0}
-	cached = st.session_state["bench_cache"].get(name, {})
-	row["AutoTS NRMSE"] = cached.get("AutoTS NRMSE", "")
-	rows_for_table.append(row)
-bench_df = pd.DataFrame(rows_for_table)
-
-# Click-to-select dataset via checkbox column
-bench_df = bench_df.copy()
-bench_df.insert(0, "Select", bench_df["Dataset"] == st.session_state["selected_dataset"])
-# Ensure the "Rows" column appears immediately after the selection column
-if "Rows" in bench_df.columns:
-	rows_series = bench_df.pop("Rows")
-	bench_df.insert(1, "Rows", rows_series)
-edited_df = st.data_editor(
-	bench_df,
-	use_container_width=True,
-	height=420,
-	hide_index=True,
-	column_config={
-		"Select": st.column_config.CheckboxColumn("Select", help="Click to run model and visualize this dataset", default=False),
-		"Rows": st.column_config.NumberColumn("Rows", disabled=True),
-		"Dataset": st.column_config.TextColumn("Dataset", disabled=True),
-		"AutoTS NRMSE": st.column_config.TextColumn("AutoTS NRMSE", disabled=True),
-	},
-)
-selected_rows = edited_df[edited_df["Select"] == True]
-if len(selected_rows) > 0:
-	# Enforce single selection by keeping only the last selected row
-	st.session_state["selected_dataset"] = selected_rows["Dataset"].iloc[-1]
-
-# Forecast visualization moved after benchmark
+# Forecast visualization
 st.markdown("#### Forecast Visualization")
-selected = st.session_state.get("selected_dataset")
-if selected:
-	with st.spinner(f"Generating forecast for {selected}..."):
-		raw_df, metadata = _load_dataset(selected)
-		series_df = _prepare_single_series(raw_df)
-		result = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
-		if not result or not isinstance(result, tuple) or len(result) != 3:
-			# Fallback to naive baseline if AutoTS fails or missing
-			nrmse, forecast, test_df = _naive_baseline(series_df, test_fraction=0.2)
-		else:
-			nrmse, forecast, test_df = result
+selected = st.selectbox("Dataset", dataset_names, index=0)
 
-	# Compact info display
-	st.caption(f"**{selected}** | AutoTS NRMSE: {float(nrmse):.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
+raw_df, metadata = _load_dataset(selected)
+series_df = _prepare_single_series(raw_df)
+result = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
+if result and isinstance(result, tuple) and len(result) == 3:
+	nrmse, forecast, test_df = result
 
 	import matplotlib.pyplot as plt
 
@@ -316,10 +220,6 @@ if selected:
 	test_pred = forecast.tail(len(test_df))
 	ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast")
 	
-	# Add confidence interval for test period
-	ax.fill_between(test_pred["ds"], test_pred["yhat_lower"], test_pred["yhat_upper"], 
-					color="#1f77b4", alpha=0.2, label="Confidence")
-
 	# Split marker
 	if len(test_df) > 0:
 		ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test")
@@ -333,3 +233,5 @@ if selected:
 	fig.tight_layout()
 
 	st.pyplot(fig)
+else:
+	st.warning("Unable to generate forecast for the selected dataset.")
