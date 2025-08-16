@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import importlib
-# Prophet is lazy-imported at runtime to avoid hard dependency at startup
 
 
 st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
@@ -171,163 +170,46 @@ def _safe_model_call(module_name: str, func_name: str, *args, **kwargs):
 
 @st.cache_data(show_spinner=False)
 def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
-	"""Compute benchmark results for all datasets across all models."""
+	"""Compute AutoTS benchmark results for all datasets."""
 	results = []
 	for name in dataset_names:
 		try:
 			raw_df, _ = _load_dataset(name)
 			series_df = _prepare_single_series(raw_df)
-			
 			row = {"Dataset": name}
-			# Add dataset row count
 			row["Rows"] = len(raw_df)
-			# Prophet
 			try:
-				p_nrmse, _, _ = _safe_model_call('models.prophet_model', 'forecast_and_nrmse', series_df, test_fraction=0.2, optimize_params_flag=False)
-				row["Prophet NRMSE"] = f"{p_nrmse:.4f}"
-			except Exception:
-				row["Prophet NRMSE"] = "Error"
-			# ARIMA / SARIMA
-			try:
-				arima_mod = importlib.import_module('models.arima_model')
-				a_nrmse, _, _ = arima_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["ARIMA NRMSE"] = f"{a_nrmse:.4f}"
-			except Exception:
-				row["ARIMA NRMSE"] = "Error"
-			# Holt-Winters
-			try:
-				hw_mod = importlib.import_module('models.holtwinters_model')
-				h_nrmse, _, _ = hw_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["Holt-Winters NRMSE"] = f"{h_nrmse:.4f}"
-			except Exception:
-				row["Holt-Winters NRMSE"] = "Error"
-			# LightGBM
-			try:
-				lgbm_mod = importlib.import_module('models.lightgbm_model')
-				l_nrmse, _, _ = lgbm_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["LightGBM NRMSE"] = f"{l_nrmse:.4f}"
-			except Exception:
-				row["LightGBM NRMSE"] = "Error"
-			# XGBoost
-			try:
-				xgb_mod = importlib.import_module('models.xgboost_model')
-				x_nrmse, _, _ = xgb_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["XGBoost NRMSE"] = f"{x_nrmse:.4f}"
-			except Exception:
-				row["XGBoost NRMSE"] = "Error"
-			# Random Forest
-			try:
-				rf_mod = importlib.import_module('models.random_forest_model')
-				r_nrmse, _, _ = rf_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["RandomForest NRMSE"] = f"{r_nrmse:.4f}"
-			except Exception:
-				row["RandomForest NRMSE"] = "Error"
-			# AutoTS
-			try:
-				autots_mod = importlib.import_module('models.autots_model')
-				at_nrmse, _, _ = autots_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+				at_nrmse, _, _ = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
 				row["AutoTS NRMSE"] = f"{at_nrmse:.4f}"
 			except Exception:
 				row["AutoTS NRMSE"] = "Error"
-			# Darts
-			try:
-				darts_mod = importlib.import_module('models.darts_models')
-				d_nrmse, _, _ = darts_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-				row["Darts NRMSE"] = f"{d_nrmse:.4f}"
-			except Exception:
-				row["Darts NRMSE"] = "Error"
-			
 			results.append(row)
 		except Exception:
 			results.append({
 				"Dataset": name,
 				"Rows": 0,
-				"Prophet NRMSE": "Error",
-				"ARIMA NRMSE": "Error",
-				"Holt-Winters NRMSE": "Error",
-				"LightGBM NRMSE": "Error",
-				"XGBoost NRMSE": "Error",
-				"RandomForest NRMSE": "Error",
 				"AutoTS NRMSE": "Error",
-				"Darts NRMSE": "Error",
 			})
 	return pd.DataFrame(results)
 
 
 def _compute_benchmark_for_dataset(name: str) -> Dict[str, str]:
-	"""Compute benchmark results for a single dataset across all models."""
+	"""Compute AutoTS benchmark result for a single dataset."""
 	try:
 		raw_df, _ = _load_dataset(name)
 		series_df = _prepare_single_series(raw_df)
 		row = {"Dataset": name, "Rows": len(raw_df)}
-		# Prophet
 		try:
-			p_nrmse, _, _ = _safe_model_call('models.prophet_model', 'forecast_and_nrmse', series_df, test_fraction=0.2, optimize_params_flag=False)
-			row["Prophet NRMSE"] = f"{p_nrmse:.4f}"
-		except Exception:
-			row["Prophet NRMSE"] = "Error"
-		# ARIMA / SARIMA
-		try:
-			arima_mod = importlib.import_module('models.arima_model')
-			a_nrmse, _, _ = arima_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["ARIMA NRMSE"] = f"{a_nrmse:.4f}"
-		except Exception:
-			row["ARIMA NRMSE"] = "Error"
-		# Holt-Winters
-		try:
-			hw_mod = importlib.import_module('models.holtwinters_model')
-			h_nrmse, _, _ = hw_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["Holt-Winters NRMSE"] = f"{h_nrmse:.4f}"
-		except Exception:
-			row["Holt-Winters NRMSE"] = "Error"
-		# LightGBM
-		try:
-			lgbm_mod = importlib.import_module('models.lightgbm_model')
-			l_nrmse, _, _ = lgbm_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["LightGBM NRMSE"] = f"{l_nrmse:.4f}"
-		except Exception:
-			row["LightGBM NRMSE"] = "Error"
-		# XGBoost
-		try:
-			xgb_mod = importlib.import_module('models.xgboost_model')
-			x_nrmse, _, _ = xgb_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["XGBoost NRMSE"] = f"{x_nrmse:.4f}"
-		except Exception:
-			row["XGBoost NRMSE"] = "Error"
-		# Random Forest
-		try:
-			rf_mod = importlib.import_module('models.random_forest_model')
-			r_nrmse, _, _ = rf_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["RandomForest NRMSE"] = f"{r_nrmse:.4f}"
-		except Exception:
-			row["RandomForest NRMSE"] = "Error"
-		# AutoTS
-		try:
-			autots_mod = importlib.import_module('models.autots_model')
-			at_nrmse, _, _ = autots_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			at_nrmse, _, _ = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
 			row["AutoTS NRMSE"] = f"{at_nrmse:.4f}"
 		except Exception:
 			row["AutoTS NRMSE"] = "Error"
-		# Darts
-		try:
-			darts_mod = importlib.import_module('models.darts_models')
-			d_nrmse, _, _ = darts_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
-			row["Darts NRMSE"] = f"{d_nrmse:.4f}"
-		except Exception:
-			row["Darts NRMSE"] = "Error"
 		return row
 	except Exception:
 		return {
 			"Dataset": name,
 			"Rows": 0,
-			"Prophet NRMSE": "Error",
-			"ARIMA NRMSE": "Error",
-			"Holt-Winters NRMSE": "Error",
-			"LightGBM NRMSE": "Error",
-			"XGBoost NRMSE": "Error",
-			"RandomForest NRMSE": "Error",
 			"AutoTS NRMSE": "Error",
-			"Darts NRMSE": "Error",
 		}
 
 
@@ -377,14 +259,7 @@ for name in dataset_names:
 	except Exception:
 		row = {"Dataset": name, "Rows": 0}
 	cached = st.session_state["bench_cache"].get(name, {})
-	row["Prophet NRMSE"] = cached.get("Prophet NRMSE", "")
-	row["ARIMA NRMSE"] = cached.get("ARIMA NRMSE", "")
-	row["Holt-Winters NRMSE"] = cached.get("Holt-Winters NRMSE", "")
-	row["LightGBM NRMSE"] = cached.get("LightGBM NRMSE", "")
-	row["XGBoost NRMSE"] = cached.get("XGBoost NRMSE", "")
-	row["RandomForest NRMSE"] = cached.get("RandomForest NRMSE", "")
 	row["AutoTS NRMSE"] = cached.get("AutoTS NRMSE", "")
-	row["Darts NRMSE"] = cached.get("Darts NRMSE", "")
 	rows_for_table.append(row)
 bench_df = pd.DataFrame(rows_for_table)
 
@@ -401,17 +276,10 @@ edited_df = st.data_editor(
 	height=420,
 	hide_index=True,
 	column_config={
-		"Select": st.column_config.CheckboxColumn("Select", help="Click to run models and visualize this dataset", default=False),
+		"Select": st.column_config.CheckboxColumn("Select", help="Click to run model and visualize this dataset", default=False),
 		"Rows": st.column_config.NumberColumn("Rows", disabled=True),
 		"Dataset": st.column_config.TextColumn("Dataset", disabled=True),
-		"Prophet NRMSE": st.column_config.TextColumn("Prophet NRMSE", disabled=True),
-		"ARIMA NRMSE": st.column_config.TextColumn("ARIMA NRMSE", disabled=True),
-		"Holt-Winters NRMSE": st.column_config.TextColumn("Holt-Winters NRMSE", disabled=True),
-		"LightGBM NRMSE": st.column_config.TextColumn("LightGBM NRMSE", disabled=True),
-		"XGBoost NRMSE": st.column_config.TextColumn("XGBoost NRMSE", disabled=True),
-		"RandomForest NRMSE": st.column_config.TextColumn("RandomForest NRMSE", disabled=True),
 		"AutoTS NRMSE": st.column_config.TextColumn("AutoTS NRMSE", disabled=True),
-		"Darts NRMSE": st.column_config.TextColumn("Darts NRMSE", disabled=True),
 	},
 )
 selected_rows = edited_df[edited_df["Select"] == True]
@@ -426,15 +294,15 @@ if selected:
 	with st.spinner(f"Generating forecast for {selected}..."):
 		raw_df, metadata = _load_dataset(selected)
 		series_df = _prepare_single_series(raw_df)
-		result = _safe_model_call('models.prophet_model', 'forecast_and_nrmse', series_df, test_fraction=0.2, optimize_params_flag=False)
+		result = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
 		if not result or not isinstance(result, tuple) or len(result) != 3:
-			# Fallback to naive baseline if Prophet fails or missing
+			# Fallback to naive baseline if AutoTS fails or missing
 			nrmse, forecast, test_df = _naive_baseline(series_df, test_fraction=0.2)
 		else:
 			nrmse, forecast, test_df = result
 
 	# Compact info display
-	st.caption(f"**{selected}** | Prophet NRMSE: {float(nrmse):.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
+	st.caption(f"**{selected}** | AutoTS NRMSE: {float(nrmse):.4f} | Points: {len(series_df)} | Test: {len(test_df)}")
 
 	import matplotlib.pyplot as plt
 

@@ -26,7 +26,7 @@ def _naive_baseline(series_df: pd.DataFrame, test_fraction: float) -> Tuple[floa
 
 def forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
     """
-    Minimal AutoTS setup. Returns (nrmse, forecast_df, test_df).
+    Minimal AutoTS setup restricted to top 10 models. Returns (nrmse, forecast_df, test_df).
     """
     try:
         n = len(series_df)
@@ -36,11 +36,25 @@ def forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> T
         train_df = series_df.iloc[:-test_size].copy().reset_index(drop=True)
         test_df = series_df.iloc[-test_size:].copy().reset_index(drop=True)
 
+        # Restrict to 10 commonly used AutoTS models
+        top10_models = [
+            'AverageValueNaive',
+            'LastValueNaive',
+            'SeasonalNaive',
+            'GLM',
+            'ETS',
+            'ARIMA',
+            'Theta',
+            'DatepartRegression',
+            'WindowRegression',
+            'UnivariateMotif',
+        ]
+
         model = AutoTS(
             forecast_length=test_size,
             frequency='infer',
-            ensemble='simple',
-            model_list='fast',
+            ensemble=None,
+            model_list=top10_models,
             num_validations=0,
             random_seed=42,
         )
