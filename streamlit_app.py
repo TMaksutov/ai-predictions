@@ -241,18 +241,120 @@ def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
 	return pd.DataFrame(results)
 
 
+def _compute_benchmark_for_dataset(name: str) -> Dict[str, str]:
+	"""Compute benchmark results for a single dataset across all models."""
+	try:
+		raw_df, _ = _load_dataset(name)
+		series_df = _prepare_single_series(raw_df)
+		row = {"Dataset": name, "Rows": len(raw_df)}
+		# Prophet
+		try:
+			p_nrmse, _, _ = prophet_forecast_and_nrmse(series_df, test_fraction=0.2, optimize_params_flag=False)
+			row["Prophet NRMSE"] = f"{p_nrmse:.4f}"
+		except Exception:
+			row["Prophet NRMSE"] = "Error"
+		# ARIMA / SARIMA
+		try:
+			arima_mod = importlib.import_module('models.arima_model')
+			a_nrmse, _, _ = arima_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["ARIMA NRMSE"] = f"{a_nrmse:.4f}"
+		except Exception:
+			row["ARIMA NRMSE"] = "Error"
+		# Holt-Winters
+		try:
+			hw_mod = importlib.import_module('models.holtwinters_model')
+			h_nrmse, _, _ = hw_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["Holt-Winters NRMSE"] = f"{h_nrmse:.4f}"
+		except Exception:
+			row["Holt-Winters NRMSE"] = "Error"
+		# LightGBM
+		try:
+			lgbm_mod = importlib.import_module('models.lightgbm_model')
+			l_nrmse, _, _ = lgbm_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["LightGBM NRMSE"] = f"{l_nrmse:.4f}"
+		except Exception:
+			row["LightGBM NRMSE"] = "Error"
+		# XGBoost
+		try:
+			xgb_mod = importlib.import_module('models.xgboost_model')
+			x_nrmse, _, _ = xgb_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["XGBoost NRMSE"] = f"{x_nrmse:.4f}"
+		except Exception:
+			row["XGBoost NRMSE"] = "Error"
+		# Random Forest
+		try:
+			rf_mod = importlib.import_module('models.random_forest_model')
+			r_nrmse, _, _ = rf_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["RandomForest NRMSE"] = f"{r_nrmse:.4f}"
+		except Exception:
+			row["RandomForest NRMSE"] = "Error"
+		# AutoTS
+		try:
+			autots_mod = importlib.import_module('models.autots_model')
+			at_nrmse, _, _ = autots_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["AutoTS NRMSE"] = f"{at_nrmse:.4f}"
+		except Exception:
+			row["AutoTS NRMSE"] = "Error"
+		# Darts
+		try:
+			darts_mod = importlib.import_module('models.darts_models')
+			d_nrmse, _, _ = darts_mod.forecast_and_nrmse(series_df, test_fraction=0.2)
+			row["Darts NRMSE"] = f"{d_nrmse:.4f}"
+		except Exception:
+			row["Darts NRMSE"] = "Error"
+		return row
+	except Exception:
+		return {
+			"Dataset": name,
+			"Rows": 0,
+			"Prophet NRMSE": "Error",
+			"ARIMA NRMSE": "Error",
+			"Holt-Winters NRMSE": "Error",
+			"LightGBM NRMSE": "Error",
+			"XGBoost NRMSE": "Error",
+			"RandomForest NRMSE": "Error",
+			"AutoTS NRMSE": "Error",
+			"Darts NRMSE": "Error",
+		}
+
+
 # Load dataset names
 dataset_names = _get_dataset_names()
 
-# Benchmark section (full width)
-st.markdown("#### Benchmark Results")
-with st.spinner("Computing benchmark..."):
-	bench_df = _compute_benchmark(tuple(dataset_names))
-
-# Click-to-select dataset via checkbox column
+# Initialize selection and cache for per-dataset benchmark results
 if "selected_dataset" not in st.session_state:
 	st.session_state["selected_dataset"] = dataset_names[0]
+if "bench_cache" not in st.session_state:
+	st.session_state["bench_cache"] = {}
 
+# Compute benchmark ONLY for the currently selected dataset and cache it
+current_selected = st.session_state["selected_dataset"]
+st.markdown("#### Benchmark Results")
+with st.spinner(f"Computing benchmark for {current_selected}..."):
+	if current_selected not in st.session_state["bench_cache"]:
+		st.session_state["bench_cache"][current_selected] = _compute_benchmark_for_dataset(current_selected)
+
+# Build table showing all datasets, but fill NRMSEs from cache only
+rows_for_table = []
+for name in dataset_names:
+	try:
+		raw_df, _ = _load_dataset(name)
+		row = {"Dataset": name, "Rows": len(raw_df)}
+	except Exception:
+		row = {"Dataset": name, "Rows": 0}
+	cached = st.session_state["bench_cache"].get(name, {})
+	row["Prophet NRMSE"] = cached.get("Prophet NRMSE", "")
+	row["ARIMA NRMSE"] = cached.get("ARIMA NRMSE", "")
+	row["Holt-Winters NRMSE"] = cached.get("Holt-Winters NRMSE", "")
+	row["LightGBM NRMSE"] = cached.get("LightGBM NRMSE", "")
+	row["XGBoost NRMSE"] = cached.get("XGBoost NRMSE", "")
+	row["RandomForest NRMSE"] = cached.get("RandomForest NRMSE", "")
+	row["AutoTS NRMSE"] = cached.get("AutoTS NRMSE", "")
+	row["Darts NRMSE"] = cached.get("Darts NRMSE", "")
+	rows_for_table.append(row)
+bench_df = pd.DataFrame(rows_for_table)
+
+# Click-to-select dataset via checkbox column
 bench_df = bench_df.copy()
 bench_df.insert(0, "Select", bench_df["Dataset"] == st.session_state["selected_dataset"])
 # Ensure the "Rows" column appears immediately after the selection column
@@ -265,7 +367,7 @@ edited_df = st.data_editor(
 	height=420,
 	hide_index=True,
 	column_config={
-		"Select": st.column_config.CheckboxColumn("Select", help="Click to visualize this dataset", default=False),
+		"Select": st.column_config.CheckboxColumn("Select", help="Click to run models and visualize this dataset", default=False),
 		"Rows": st.column_config.NumberColumn("Rows", disabled=True),
 		"Dataset": st.column_config.TextColumn("Dataset", disabled=True),
 		"Prophet NRMSE": st.column_config.TextColumn("Prophet NRMSE", disabled=True),
