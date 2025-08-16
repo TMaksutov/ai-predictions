@@ -1,0 +1,64 @@
+from typing import Tuple
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+
+def _infer_seasonal_period(series_df: pd.DataFrame) -> int:
+    freq = pd.infer_freq(series_df['ds'])
+    if freq == 'H':
+        return 24
+    if freq in ('D', 'B'):
+        return 7
+    if freq in ('W',):
+        return 52
+    if freq in ('M', 'MS'):
+        return 12
+    return 0
+
+
+def forecast_and_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+    """
+    Minimal SARIMAX forecast with basic order and optional seasonality.
+    Returns (nrmse, forecast_df with ['ds','yhat','yhat_lower','yhat_upper'], test_df).
+    """
+    test_size = int(len(series_df) * test_fraction)
+    train_df = series_df.iloc[:-test_size].copy()
+    test_df = series_df.iloc[-test_size:].copy()
+
+    m = _infer_seasonal_period(series_df)
+    order = (1, 1, 1)
+    seasonal_order = (1, 1, 1, m) if m and m > 1 else (0, 0, 0, 0)
+
+    model = SARIMAX(
+        train_df['y'],
+        order=order,
+        seasonal_order=seasonal_order,
+        enforce_stationarity=False,
+        enforce_invertibility=False,
+    )
+    results = model.fit(disp=False)
+
+    fcst = results.get_forecast(steps=test_size)
+    yhat = fcst.predicted_mean
+    conf = fcst.conf_int(alpha=0.2)
+
+    if isinstance(conf, pd.DataFrame) and conf.shape[1] >= 2:
+        lower = conf.iloc[:, 0].to_numpy()
+        upper = conf.iloc[:, 1].to_numpy()
+    else:
+        lower = yhat.to_numpy()
+        upper = yhat.to_numpy()
+
+    forecast_df = pd.DataFrame({
+        'ds': test_df['ds'].to_numpy(),
+        'yhat': yhat.to_numpy(),
+        'yhat_lower': lower,
+        'yhat_upper': upper,
+    })
+
+    y_true = test_df['y'].to_numpy()
+    rmse = float(np.sqrt(np.mean((y_true - forecast_df['yhat'].to_numpy()) ** 2)))
+    y_range = np.max(y_true) - np.min(y_true)
+    nrmse = rmse / y_range if y_range > 0 else rmse
+    return nrmse, forecast_df, test_df
