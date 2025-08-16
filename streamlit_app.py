@@ -143,7 +143,7 @@ def _load_dataset(name: str) -> Tuple[pd.DataFrame, dict]:
 def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
 	"""Prepare dataset for forecasting."""
 	# Already in correct format (ds, y)
-	sub = df[["ds", "y"]].copy()
+	sub = df[[("ds"), ("y")]].copy()
 	
 	# Ensure proper types
 	sub["ds"] = pd.to_datetime(sub["ds"])
@@ -152,6 +152,10 @@ def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
 	
 	# Deduplicate by timestamp (shouldn't be needed for generated data)
 	sub = sub.groupby("ds", as_index=False).agg({"y": "mean"})
+	
+	# Limit to last 1000 rows for training/evaluation
+	if len(sub) > 1000:
+		sub = sub.iloc[-1000:].reset_index(drop=True)
 	
 	return sub
 
