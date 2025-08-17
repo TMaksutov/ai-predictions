@@ -1,8 +1,7 @@
-from typing import List, Tuple
+from typing import List
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -44,34 +43,19 @@ def load_series_from_csv(file_path: Path) -> pd.DataFrame:
 	return sub
 
 
-def forecast_nrmscm(series_df: pd.DataFrame, model_name: str, test_fraction: float = 0.2):
-	from models.autots_model import forecast_single_model
-	return forecast_single_model(series_df, model_name=model_name, test_fraction=test_fraction)
+def forecast_nrmse(series_df: pd.DataFrame, test_fraction: float = 0.2):
+	from models.regression_model import forecast_regression
+	return forecast_regression(series_df, test_fraction=test_fraction)
 
 
-st.markdown("### Time Series Benchmark (Data Folder Only)")
-
-# Model selection (single model only)
-model_options = [
-	"ARIMA",
-	"ETS",
-	"Theta",
-	"GLM",
-	"DatepartRegression",
-	"SeasonalNaive",
-	"LastValueNaive",
-	"AverageValueNaive",
-	"WindowRegression",
-	"UnivariateMotif",
-]
-selected_model = st.selectbox("Model (AutoTS)", model_options, index=0)
+st.markdown("### Daily Regression Benchmark")
 
 # Build table of datasets
 csv_files = list_csv_files(DATA_DIR)
 index_names = [p.name for p in csv_files]
 rows_counts = [count_rows_in_csv(p) for p in csv_files]
 
-metric_col_name = f"{selected_model} nRMSCM"
+metric_col_name = "Regression nRMSE"
 
 # Initialize selection state
 if "selection_state" not in st.session_state:
@@ -124,11 +108,11 @@ else:
 		if len(series) < 30:
 			st.error("Insufficient data (need at least 30 rows) in the selected file.")
 		else:
-			nrmscm, forecast_df, test_df = forecast_nrmscm(series, model_name=selected_model, test_fraction=0.2)
+			nrmse, forecast_df, test_df = forecast_nrmse(series, test_fraction=0.2)
 
 			# Update and display results table with metric for selected row
 			updated_table = edited_df.copy()
-			updated_table.loc[selected_name, metric_col_name] = float(nrmscm)
+			updated_table.loc[selected_name, metric_col_name] = float(nrmse)
 			st.dataframe(updated_table, use_container_width=True, hide_index=False)
 
 			# Plot actual vs forecast
@@ -140,7 +124,7 @@ else:
 				ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test")
 			ax.set_xlabel("Date")
 			ax.set_ylabel("Value")
-			ax.set_title(f"{selected_name} — {selected_model} (nRMSCM={nrmscm:.4f})")
+			ax.set_title(f"{selected_name} — Regression (nRMSE={nrmse:.4f})")
 			ax.legend()
 			ax.grid(alpha=0.3)
 			fig.tight_layout()
