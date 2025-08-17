@@ -1,237 +1,149 @@
-from typing import List, Tuple, Dict
+from typing import List, Tuple
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-import importlib
+
+st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
+
+DATA_DIR = Path(__file__).parent / "data"
 
 
-st.set_page_config(page_title="TS Forecasting Benchmark", layout="wide")
-
-# Compact header
-st.markdown("### Time Series Forecasting Benchmark")
-st.caption("NRMSE on 10 sample datasets")
-
-
-def _generate_sample_datasets() -> Dict[str, pd.DataFrame]:
-	"""Generate 10 diverse sample time series datasets for benchmarking."""
-	datasets = {}
-	np.random.seed(42)  # For reproducible results
-	
-	# Dataset 1: Linear trend with noise
-	dates = pd.date_range('2020-01-01', periods=200, freq='D')
-	trend = np.linspace(100, 200, 200)
-	noise = np.random.normal(0, 5, 200)
-	datasets['Linear_Trend'] = pd.DataFrame({
-		'ds': dates,
-		'y': trend + noise
-	})
-	
-	# Dataset 2: Seasonal pattern (weekly)
-	dates = pd.date_range('2020-01-01', periods=300, freq='D')
-	seasonal = 50 + 20 * np.sin(2 * np.pi * np.arange(300) / 7)  # Weekly pattern
-	noise = np.random.normal(0, 3, 300)
-	datasets['Weekly_Seasonal'] = pd.DataFrame({
-		'ds': dates,
-		'y': seasonal + noise
-	})
-	
-	# Dataset 3: Exponential growth
-	dates = pd.date_range('2020-01-01', periods=150, freq='D')
-	growth = 10 * np.exp(0.01 * np.arange(150))
-	noise = np.random.normal(0, growth * 0.05)  # Proportional noise
-	datasets['Exponential_Growth'] = pd.DataFrame({
-		'ds': dates,
-		'y': growth + noise
-	})
-	
-	# Dataset 4: Multiple seasonality (daily + weekly)
-	dates = pd.date_range('2020-01-01', periods=400, freq='h')
-	daily = 10 * np.sin(2 * np.pi * np.arange(400) / 24)  # Daily pattern
-	weekly = 5 * np.sin(2 * np.pi * np.arange(400) / (24*7))  # Weekly pattern
-	base = 100
-	noise = np.random.normal(0, 2, 400)
-	datasets['Hourly_Multi_Seasonal'] = pd.DataFrame({
-		'ds': dates,
-		'y': base + daily + weekly + noise
-	})
-	
-	# Dataset 5: Step change
-	dates = pd.date_range('2020-01-01', periods=250, freq='D')
-	values = np.ones(250) * 50
-	values[125:] += 30  # Step change halfway
-	noise = np.random.normal(0, 4, 250)
-	datasets['Step_Change'] = pd.DataFrame({
-		'ds': dates,
-		'y': values + noise
-	})
-	
-	# Dataset 6: Cyclical pattern (annual-like)
-	dates = pd.date_range('2020-01-01', periods=365*2, freq='D')
-	annual = 75 + 25 * np.sin(2 * np.pi * np.arange(365*2) / 365)
-	noise = np.random.normal(0, 3, 365*2)
-	datasets['Annual_Cycle'] = pd.DataFrame({
-		'ds': dates,
-		'y': annual + noise
-	})
-	
-	# Dataset 7: Random walk
-	dates = pd.date_range('2020-01-01', periods=200, freq='D')
-	random_walk = np.cumsum(np.random.normal(0, 2, 200)) + 100
-	datasets['Random_Walk'] = pd.DataFrame({
-		'ds': dates,
-		'y': random_walk
-	})
-	
-	# Dataset 8: Polynomial trend
-	dates = pd.date_range('2020-01-01', periods=180, freq='D')
-	x = np.arange(180) / 180
-	polynomial = 50 + 30*x + 20*x**2 - 10*x**3
-	noise = np.random.normal(0, 4, 180)
-	datasets['Polynomial_Trend'] = pd.DataFrame({
-		'ds': dates,
-		'y': polynomial + noise
-	})
-	
-	# Dataset 9: Damped oscillation
-	dates = pd.date_range('2020-01-01', periods=220, freq='D')
-	t = np.arange(220)
-	damped = 100 + 50 * np.exp(-t/100) * np.sin(2 * np.pi * t / 30)
-	noise = np.random.normal(0, 3, 220)
-	datasets['Damped_Oscillation'] = pd.DataFrame({
-		'ds': dates,
-		'y': damped + noise
-	})
-	
-	# Dataset 10: Mixed patterns
-	dates = pd.date_range('2020-01-01', periods=300, freq='D')
-	trend = 0.1 * np.arange(300)
-	seasonal = 15 * np.sin(2 * np.pi * np.arange(300) / 50)  # Custom period
-	weekly = 5 * np.sin(2 * np.pi * np.arange(300) / 7)
-	base = 80
-	noise = np.random.normal(0, 4, 300)
-	datasets['Mixed_Patterns'] = pd.DataFrame({
-		'ds': dates,
-		'y': base + trend + seasonal + weekly + noise
-	})
-	
-	return datasets
+def list_csv_files(directory: Path) -> List[Path]:
+	if not directory.exists():
+		directory.mkdir(parents=True, exist_ok=True)
+	return sorted([p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".csv"])
 
 
-def _get_dataset_names() -> List[str]:
-	"""Get list of available dataset names."""
-	return [
-		'Linear_Trend', 'Weekly_Seasonal', 'Exponential_Growth', 
-		'Hourly_Multi_Seasonal', 'Step_Change', 'Annual_Cycle',
-		'Random_Walk', 'Polynomial_Trend', 'Damped_Oscillation', 'Mixed_Patterns'
-	]
+def count_rows_in_csv(file_path: Path) -> int:
+	try:
+		with file_path.open("r", encoding="utf-8") as f:
+			return max(0, sum(1 for _ in f) - 1)
+	except Exception:
+		return 0
 
 
-def _load_dataset(name: str) -> Tuple[pd.DataFrame, dict]:
-	"""Load a specific dataset by name."""
-	datasets = _generate_sample_datasets()
-	if name not in datasets:
-		raise ValueError(f"Dataset {name} not found")
-	
-	data = datasets[name].copy()
-	metadata = {"name": name, "description": f"Generated sample dataset: {name}"}
-	return data, metadata
+def load_series_from_csv(file_path: Path) -> pd.DataFrame:
+	"""
+	Assumes first column is timestamp and last column is target.
+	Renames to (ds, y), coerces types, sorts by ds.
+	"""
+	df = pd.read_csv(file_path)
+	if df.shape[1] < 2:
+		raise ValueError("CSV must have at least two columns: time and target")
 
-
-def _prepare_single_series(df: pd.DataFrame) -> pd.DataFrame:
-	"""Prepare dataset for forecasting."""
-	# Already in correct format (ds, y)
-	sub = df[[("ds"), ("y")]].copy()
-	
-	# Ensure proper types
-	sub["ds"] = pd.to_datetime(sub["ds"])
+	first_col = df.columns[0]
+	last_col = df.columns[-1]
+	sub = df[[first_col, last_col]].copy()
+	sub = sub.rename(columns={first_col: "ds", last_col: "y"})
+	sub["ds"] = pd.to_datetime(sub["ds"], errors="coerce")
 	sub["y"] = pd.to_numeric(sub["y"], errors="coerce")
 	sub = sub.dropna(subset=["ds", "y"]).sort_values("ds").reset_index(drop=True)
-	
-	# Deduplicate by timestamp (shouldn't be needed for generated data)
-	sub = sub.groupby("ds", as_index=False).agg({"y": "mean"})
-	
-	# Limit to last 1000 rows for training/evaluation
-	if len(sub) > 1000:
-		sub = sub.iloc[-1000:].reset_index(drop=True)
-	
 	return sub
 
 
-def _safe_model_call(module_name: str, func_name: str, *args, **kwargs):
-	try:
-		mod = importlib.import_module(module_name)
-		func = getattr(mod, func_name)
-		return func(*args, **kwargs)
-	except Exception:
-		return None
+def forecast_nrmscm(series_df: pd.DataFrame, model_name: str, test_fraction: float = 0.2):
+	from models.autots_model import forecast_single_model
+	return forecast_single_model(series_df, model_name=model_name, test_fraction=test_fraction)
 
 
-def _compute_benchmark(dataset_names: Tuple[str, ...]) -> pd.DataFrame:
-	"""Compute AutoTS benchmark results for all datasets."""
-	results = []
-	for name in dataset_names:
-		try:
-			raw_df, _ = _load_dataset(name)
-			series_df = _prepare_single_series(raw_df)
-			row = {"Dataset": name}
-			row["Rows"] = len(raw_df)
-			try:
-				at_nrmse, _, _ = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
-				row["AutoTS NRMSE"] = f"{at_nrmse:.4f}"
-			except Exception:
-				row["AutoTS NRMSE"] = "Error"
-			results.append(row)
-		except Exception:
-			results.append({
-				"Dataset": name,
-				"Rows": 0,
-				"AutoTS NRMSE": "Error",
-			})
-	return pd.DataFrame(results)
+st.markdown("### Time Series Benchmark (Data Folder Only)")
 
+# Model selection (single model only)
+model_options = [
+	"ARIMA",
+	"ETS",
+	"Theta",
+	"GLM",
+	"DatepartRegression",
+	"SeasonalNaive",
+	"LastValueNaive",
+	"AverageValueNaive",
+	"WindowRegression",
+	"UnivariateMotif",
+]
+selected_model = st.selectbox("Model (AutoTS)", model_options, index=0)
 
-# Load dataset names
-dataset_names = _get_dataset_names()
+# Build table of datasets
+csv_files = list_csv_files(DATA_DIR)
+index_names = [p.name for p in csv_files]
+rows_counts = [count_rows_in_csv(p) for p in csv_files]
 
-st.markdown("#### Benchmark Results")
-bench_df = _compute_benchmark(tuple(dataset_names))
-st.dataframe(bench_df, use_container_width=True, height=420, hide_index=True)
+metric_col_name = f"{selected_model} nRMSCM"
 
-# Forecast visualization
-st.markdown("#### Forecast Visualization")
-selected = st.selectbox("Dataset", dataset_names, index=0)
-
-raw_df, metadata = _load_dataset(selected)
-series_df = _prepare_single_series(raw_df)
-result = _safe_model_call('models.autots_model', 'forecast_and_nrmse', series_df, test_fraction=0.2)
-if result and isinstance(result, tuple) and len(result) == 3:
-	nrmse, forecast, test_df = result
-
-	import matplotlib.pyplot as plt
-
-	# Create smaller figure to fit layout
-	fig, ax = plt.subplots(figsize=(9, 5))
-	
-	# Plot full actual data
-	ax.plot(series_df["ds"], series_df["y"], color="#333333", label="Actual", linewidth=2, alpha=0.8)
-
-	# Plot forecast for test period only
-	test_pred = forecast.tail(len(test_df))
-	ax.plot(test_pred["ds"], test_pred["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast")
-	
-	# Split marker
-	if len(test_df) > 0:
-		ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test")
-
-	ax.set_xlabel("Date", fontsize=10)
-	ax.set_ylabel("Value", fontsize=10)
-	ax.set_title(f"Forecast: {selected}", fontsize=12)
-	ax.legend(fontsize=9)
-	ax.grid(alpha=0.3)
-	ax.tick_params(labelsize=9)
-	fig.tight_layout()
-
-	st.pyplot(fig)
+# Initialize selection state
+if "selection_state" not in st.session_state:
+	st.session_state.selection_state = {name: False for name in index_names}
 else:
-	st.warning("Unable to generate forecast for the selected dataset.")
+	# Ensure keys match current files
+	for name in index_names:
+		st.session_state.selection_state.setdefault(name, False)
+	# Remove stale entries
+	st.session_state.selection_state = {k: v for k, v in st.session_state.selection_state.items() if k in index_names}
+
+# Prepare table data
+table_df = pd.DataFrame({
+	"Select": [st.session_state.selection_state.get(n, False) for n in index_names],
+	"# Rows": rows_counts,
+	metric_col_name: [None] * len(index_names),
+}, index=index_names)
+
+# Interactive editor for single selection
+edited_df = st.data_editor(
+	table_df,
+	use_container_width=True,
+	hide_index=False,
+	num_rows="fixed",
+	column_config={
+		"Select": st.column_config.CheckboxColumn(required=False),
+		"# Rows": st.column_config.NumberColumn(disabled=True),
+		metric_col_name: st.column_config.NumberColumn(format="%.4f", disabled=True),
+	},
+	key="datasets_editor",
+)
+
+# Update session selection from edits
+for fname, row in edited_df.iterrows():
+	st.session_state.selection_state[fname] = bool(row.get("Select", False))
+
+selected_files = [name for name, is_sel in st.session_state.selection_state.items() if is_sel]
+
+if len(selected_files) == 0:
+	st.info("Select one file to run the forecast.")
+elif len(selected_files) > 1:
+	st.warning("Please select only one file.")
+else:
+	# Exactly one selected
+	selected_name = selected_files[0]
+	selected_path = DATA_DIR / selected_name
+
+	try:
+		series = load_series_from_csv(selected_path)
+		if len(series) < 30:
+			st.error("Insufficient data (need at least 30 rows) in the selected file.")
+		else:
+			nrmscm, forecast_df, test_df = forecast_nrmscm(series, model_name=selected_model, test_fraction=0.2)
+
+			# Update and display results table with metric for selected row
+			updated_table = edited_df.copy()
+			updated_table.loc[selected_name, metric_col_name] = float(nrmscm)
+			st.dataframe(updated_table, use_container_width=True, hide_index=False)
+
+			# Plot actual vs forecast
+			import matplotlib.pyplot as plt
+			fig, ax = plt.subplots(figsize=(9, 5))
+			ax.plot(series["ds"], series["y"], color="#333333", label="Actual", linewidth=2, alpha=0.8)
+			ax.plot(forecast_df["ds"], forecast_df["yhat"], color="#1f77b4", linestyle="--", linewidth=2, label="Forecast")
+			if len(test_df) > 0:
+				ax.axvline(test_df["ds"].iloc[0], color="#888888", linestyle=":", linewidth=1, label="Train/Test")
+			ax.set_xlabel("Date")
+			ax.set_ylabel("Value")
+			ax.set_title(f"{selected_name} — {selected_model} (nRMSCM={nrmscm:.4f})")
+			ax.legend()
+			ax.grid(alpha=0.3)
+			fig.tight_layout()
+			st.pyplot(fig)
+	except Exception as e:
+		st.error(f"Failed to run forecast: {e}")
