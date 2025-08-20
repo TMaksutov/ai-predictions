@@ -1,136 +1,40 @@
-from typing import List
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from models import get_fast_estimators, train_full_and_forecast_future
-from models import analyze_preprocessing
-from models import _build_features
+from modeling import get_fast_estimators, train_full_and_forecast_future
+from modeling import train_on_known_and_forecast_missing
+from features import build_features as _build_features
+from data_io import read_table_any as _read_table_any
+from data_io import build_checklist_grouped
+import io
 
 st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
 
+# Enforce a wider sidebar
+st.markdown(
+    """
+    <style>
+        [data-testid="stSidebar"] {
+            min-width: 500px;
+            max-width: 500px;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            min-width: 500px;
+            max-width: 500px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 SAMPLE_PATH = Path(__file__).parent / "sample.csv"
-METRIC_NAME = "nRMSE"
+METRIC_NAME = "MAPE"
 
-
-# -----------------------------
-# Utilities
-# -----------------------------
-def load_series_from_csv(file_path: Path):
-    """
-    Assumes first column is timestamp and last column is target.
-    Keeps all middle columns as exogenous features.
-    Renames to (ds, y), coerces types, handles duplicates and daily reindex,
-    filling y by interpolation and exogenous features appropriately.
-    """
-    import numpy as np
-
-    df = pd.read_csv(file_path)
-    if df.shape[1] < 2:
-        raise ValueError("CSV must have at least two columns: time and target")
-
-    first_col = df.columns[0]
-    last_col = df.columns[-1]
-    exog_cols_original = [c for c in df.columns if c not in [first_col, last_col]]
-
-    # Rename key columns and keep all others
-    df = df.rename(columns={first_col: "ds", last_col: "y"})
-    df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
-    df["y"] = pd.to_numeric(df["y"], errors="coerce")
-
-    rows_before = int(len(df))
-
-    # Drop only rows with invalid/missing timestamps; keep y NaNs to impute later
-    ds_valid_mask = df["ds"].notna()
-    dropped_due_to_ds = int((~ds_valid_mask).sum())
-    df = df.loc[ds_valid_mask].copy()
-
-    # Handle duplicate timestamps: mean for y, last for exogenous
-    duplicates_aggregated = int(df.duplicated(subset=["ds"]).sum())
-    if duplicates_aggregated > 0:
-        y_mean = df.groupby("ds", as_index=False)["y"].mean()
-        last_vals = df.groupby("ds", as_index=False).last()
-        last_vals = last_vals.drop(columns=["y"], errors="ignore")
-        df = pd.merge(y_mean, last_vals, on="ds", how="left")
-    df = df.sort_values("ds").reset_index(drop=True)
-    unique_after_group = int(len(df))
-
-    # Prepare daily index
-    df = df.set_index("ds")
-    full_range = pd.date_range(df.index.min(), df.index.max(), freq="D")
-    df = df.reindex(full_range)
-    df.index.name = "ds"
-
-    # Interpolate/Impute target y
-    y_nan_before = int(df["y"].isna().sum())
-    gaps_filled = int(df["y"].isna().sum())
-    df["y"] = df["y"].interpolate(method="time")
-    y_median_post_interp = df["y"].median()
-    if pd.isna(y_median_post_interp):
-        y_median_post_interp = float(df["y"].dropna().median() if not df["y"].dropna().empty else 0.0)
-    df["y"] = df["y"].fillna(float(y_median_post_interp))
-    y_interpolated_rows = int(gaps_filled)
-
-    # Handle exogenous columns during reindex
-    used_exog_cols = []
-    numeric_exog_cols = []
-    categorical_exog_cols = []
-    for col in exog_cols_original:
-        if col not in df.columns:
-            # Column could be missing after groupby merge; skip
-            continue
-        series = df[col]
-        # Try to coerce to numeric to detect numeric-like
-        numeric_coerced = pd.to_numeric(series, errors="coerce")
-        numeric_ratio = float(numeric_coerced.notna().sum()) / float(len(series)) if len(series) > 0 else 0.0
-        if numeric_ratio >= 0.6:  # treat as numeric if majority can be parsed
-            df[col] = numeric_coerced
-            # interpolate and fill median
-            df[col] = df[col].interpolate(method="time")
-            col_median = float(df[col].median()) if not np.isnan(df[col].median()) else 0.0
-            df[col] = df[col].fillna(col_median)
-            numeric_exog_cols.append(col)
-            used_exog_cols.append(col)
-        else:
-            # Treat as categorical/text: forward fill then backfill, then 'Unknown'
-            df[col] = series.fillna(method="ffill").fillna(method="bfill").fillna("Unknown")
-            categorical_exog_cols.append(col)
-            used_exog_cols.append(col)
-
-    # Cap outliers on y using IQR method
-    q1 = float(df["y"].quantile(0.25))
-    q3 = float(df["y"].quantile(0.75))
-    iqr = q3 - q1
-    lower = q1 - 1.5 * iqr
-    upper = q3 + 1.5 * iqr
-    y_before_cap = df["y"].copy()
-    df["y"] = df["y"].clip(lower=lower, upper=upper)
-    y_capped_rows = int((y_before_cap != df["y"]).sum())
-
-    sub = df.reset_index().rename(columns={"index": "ds"})
-    rows_after = int(len(sub))
-
-    meta = {
-        "original_time_col": first_col,
-        "original_target_col": last_col,
-        "total_columns": int(len(["ds"] + used_exog_cols + ["y"])),
-        "ignored_columns": 0,
-        "rows_before": rows_before,
-        "rows_after": rows_after,
-        "rows_dropped": max(dropped_due_to_ds, 0),
-        "duplicates_aggregated": int(duplicates_aggregated),
-        "rows_added_by_resample": int(rows_after - unique_after_group),
-        "y_interpolated_rows": int(y_interpolated_rows),
-        "y_imputed_rows": int(y_nan_before),
-        "y_capped_rows": int(y_capped_rows),
-        "num_exog_numeric": int(len(numeric_exog_cols)),
-        "num_exog_categorical": int(len(categorical_exog_cols)),
-    }
-    return sub, meta
-
+# Utilities, I/O helpers, and checklist provided by: data_io.py, modeling.py, features.py
 
 def run_benchmark(series_df: pd.DataFrame, test_fraction: float = 0.2):
-    from models import benchmark_models
+    from modeling import benchmark_models
     return benchmark_models(series_df, test_fraction=test_fraction)
 
 
@@ -139,91 +43,192 @@ def run_benchmark(series_df: pd.DataFrame, test_fraction: float = 0.2):
  # -----------------------------
 # Single upload control
 uploaded = st.sidebar.file_uploader(
-    "Upload a CSV (time column first, target last)",
+    "Upload a CSV (date column first, target last)",
     type=["csv"],
     accept_multiple_files=False,
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
 )
 
-# Determine data source: uploaded file or default
+# Note: Keep raw_df/file_info/series/load_meta consistent. If an uploaded file has
+# errors, do not fall back to default; show the checklist instead.
 data_source_name = None
 series = None
+raw_df = pd.DataFrame()
+file_info = {"error": None, "file_type": None, "n_rows": None, "n_cols": None, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
+load_meta = {"original_time_col": None, "original_target_col": None, "trailing_missing_count": 0, "last_known_ds": None, "future_rows_raw": pd.DataFrame()}
 
 if uploaded is not None:
+    data_source_name = getattr(uploaded, "name", "uploaded.csv")
     try:
-        series, load_meta = load_series_from_csv(uploaded)
-        data_source_name = getattr(uploaded, "name", "uploaded.csv")
+        raw_df, file_info = _read_table_any(uploaded)
     except Exception as e:
-        st.error(f"Failed to read uploaded file: {e}")
+        file_info = {"error": f"Read failed: {e}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
 
-if series is None:
+    if not file_info.get("error"):
+        try:
+            # Build a clean series avoiding duplicate 'ds'/'y' labels regardless of original headers
+            orig_cols = list(raw_df.columns)
+            first_col = orig_cols[0]
+            last_col = orig_cols[-1]
+
+            ds_series = pd.to_datetime(raw_df[first_col], errors="coerce")
+            y_series = pd.to_numeric(raw_df[last_col], errors="coerce")
+
+            series = pd.DataFrame({
+                "ds": ds_series,
+                "y": y_series,
+            })
+            # Attach intermediate feature columns if any, skipping any that collide with 'ds'/'y'
+            for c in orig_cols[1:-1]:
+                if c in ("ds", "y"):
+                    continue
+                series[c] = raw_df[c]
+
+            series = series.sort_values("ds").reset_index(drop=True)
+            load_meta = {
+                "original_time_col": first_col,
+                "original_target_col": last_col,
+                "trailing_missing_count": 0,
+                "last_known_ds": series["ds"].max() if not series.empty else None,
+                "future_rows_raw": pd.DataFrame(),
+            }
+        except Exception as e:
+            file_info = {**file_info, "error": f"Build series failed: {e}"}
+else:
+    # No upload; use default
     default_path = SAMPLE_PATH
-    if not default_path.exists():
-        st.error(f"Default data file not found: {default_path}")
-        st.stop()
-    try:
-        series, load_meta = load_series_from_csv(default_path)
-        data_source_name = default_path.name
-    except Exception as e:
-        st.error(f"Failed to load default dataset: {e}")
-        st.stop()
+    data_source_name = default_path.name
+    if default_path.exists():
+        try:
+            raw_df, file_info = _read_table_any(default_path)
+        except Exception as e:
+            file_info = {"error": f"Read failed: {e}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
+        if not file_info.get("error"):
+            try:
+                # Build a clean series avoiding duplicate 'ds'/'y' labels for the default dataset as well
+                orig_cols = list(raw_df.columns)
+                first_col = orig_cols[0]
+                last_col = orig_cols[-1]
 
-# Sidebar progress checklist (simple)
+                ds_series = pd.to_datetime(raw_df[first_col], errors="coerce")
+                y_series = pd.to_numeric(raw_df[last_col], errors="coerce")
+
+                series = pd.DataFrame({
+                    "ds": ds_series,
+                    "y": y_series,
+                })
+                for c in orig_cols[1:-1]:
+                    if c in ("ds", "y"):
+                        continue
+                    series[c] = raw_df[c]
+
+                series = series.sort_values("ds").reset_index(drop=True)
+                load_meta = {
+                    "original_time_col": first_col,
+                    "original_target_col": last_col,
+                    "trailing_missing_count": 0,
+                    "last_known_ds": series["ds"].max() if not series.empty else None,
+                    "future_rows_raw": pd.DataFrame(),
+                }
+            except Exception as e:
+                file_info = {**file_info, "error": f"Build series failed: {e}"}
+    else:
+        file_info = {"error": f"Default data file not found: {default_path}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
+
+if data_source_name:
+    try:
+        st.sidebar.caption(f"Dataset: {data_source_name}")
+    except Exception:
+        pass
+
+# Sidebar checklist
 progress_container = st.sidebar.container()
 with progress_container:
-    st.markdown("<div style='font-weight:600; margin:0 0 6px 0'>Progress</div>", unsafe_allow_html=True)
-    success_icon, warn_icon, error_icon = "✅", "⚠️", "❌"
-    ignored_cols = load_meta.get("ignored_columns", 0)
-    rows_dropped = load_meta.get("rows_dropped", 0)
-    rows_after = load_meta.get("rows_after", len(series))
-    y_imputed_rows = load_meta.get("y_imputed_rows", 0)
-    y_interpolated_rows = load_meta.get("y_interpolated_rows", 0)
-    y_capped_rows = load_meta.get("y_capped_rows", 0)
-    duplicates_aggregated = load_meta.get("duplicates_aggregated", 0)
-    rows_added_by_resample = load_meta.get("rows_added_by_resample", 0)
-    columns_icon = warn_icon if ignored_cols > 0 else success_icon
-    missing_time_icon = warn_icon if rows_dropped > 0 else success_icon
-    y_impute_icon = warn_icon if y_imputed_rows > 0 else success_icon
-    loaded_icon = error_icon if rows_after == 0 else success_icon
-    time_icon = success_icon
-    line_style = "style='margin:2px 0; line-height:1.2'"
-    st.markdown(f"<div {line_style}>{loaded_icon} Rows loaded: {rows_after}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div {line_style}>{time_icon} Time series column: {load_meta.get('original_time_col', 'unknown')}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div {line_style}>{columns_icon} Columns detected: {load_meta.get('total_columns', 0)}</div>", unsafe_allow_html=True)
-    dropped_icon = warn_icon if ignored_cols > 0 else success_icon
-    st.markdown(f"<div {line_style}>{dropped_icon} Columns dropped: {ignored_cols}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div {line_style}>{missing_time_icon} Rows dropped (invalid time): {rows_dropped}</div>", unsafe_allow_html=True)
-    agg_icon = success_icon if duplicates_aggregated == 0 else warn_icon
-    st.markdown(f"<div {line_style}>{agg_icon} Duplicate timestamps aggregated: {duplicates_aggregated}</div>", unsafe_allow_html=True)
-    resample_icon = success_icon if rows_added_by_resample == 0 else warn_icon
-    st.markdown(f"<div {line_style}>{resample_icon} Rows added by daily resample: {rows_added_by_resample}</div>", unsafe_allow_html=True)
-    interp_icon = success_icon if y_interpolated_rows == 0 else warn_icon
-    st.markdown(f"<div {line_style}>{interp_icon} Target values interpolated: {y_interpolated_rows}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div {line_style}>{y_impute_icon} Target values imputed (median): {y_imputed_rows}</div>", unsafe_allow_html=True)
-    cap_icon = success_icon if y_capped_rows == 0 else warn_icon
-    st.markdown(f"<div {line_style}>{cap_icon} Outliers capped (IQR): {y_capped_rows}</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-weight:600; margin:0 0 6px 0; text-align:center'>Checklist</div>", unsafe_allow_html=True)
 
-# Controls next to the graph
-controls_col, plot_col = st.columns([1, 5])
+def _render_checklist(grouped_items):
+    with progress_container:
+        for title, items in grouped_items:
+            st.markdown(f"<div style='font-weight:600; margin:6px 0 3px 0'>{title}</div>", unsafe_allow_html=True)
+            for idx, (status, text) in enumerate(items):
+                icon = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
+                st.markdown(f"<div style='margin:2px 0; line-height:1.2'>{icon} {text}</div>", unsafe_allow_html=True)
 
-# Option to show only the last 20% (test window)
-show_only_test = controls_col.checkbox("Hide train", value=True)
+# Persisted UI defaults for display controls
+for _key, _default in [
+    ("show_only_test", True),
+    ("hide_non_chosen_models", True),
+    ("hide_table", True),
+    ("hide_features_table", True),
+]:
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
 
-# Option to hide benchmark model lines except the chosen best model
-hide_non_chosen_models = controls_col.checkbox("Hide models", value=True)
+# New user-facing toggles default to False (content hidden by default)
+for _key, _default in [
+    ("show_full_history", False),
+    ("show_all_model_forecasts", False),
+    ("show_model_comparison_table", False),
+    ("show_training_data_preview", False),
+]:
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
 
-# Option to hide the benchmark results table
-hide_table = controls_col.checkbox("Hide benchmark table", value=True)
+# Derive legacy flags from the new toggles so plotting logic uses them immediately
+st.session_state["show_only_test"] = not st.session_state.get("show_full_history", False)
+st.session_state["hide_non_chosen_models"] = not st.session_state.get("show_all_model_forecasts", False)
+st.session_state["hide_table"] = not st.session_state.get("show_model_comparison_table", False)
+st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
-# Option to hide the features sample table (first 5 rows)
-hide_features_table = controls_col.checkbox("Hide features table", value=True)
+# Read current control values from session state (widgets will render under the graph)
+show_only_test = st.session_state.get("show_only_test", True)
+hide_non_chosen_models = st.session_state.get("hide_non_chosen_models", True)
+hide_table = st.session_state.get("hide_table", True)
+hide_features_table = st.session_state.get("hide_features_table", True)
 
-# Run benchmark and plot
+# Build checklist early and gate predictions/features if any non-OK in critical sections
+# Initial checklist with no modeling artifacts
+pre_grouped = build_checklist_grouped(
+    raw_df,
+    file_info,
+    series if isinstance(series, pd.DataFrame) else pd.DataFrame(),
+    load_meta,
+    results=[],
+    future_horizon=0,
+)
+
+def _has_blocking_issues(grouped_items):
+    blocking_sections = {"Open & analyze", "Features & prep"}
+    for title, items in grouped_items:
+        if title not in blocking_sections:
+            continue
+        for status, _ in items:
+            if status == "error":
+                return True
+    return False
+
+if _has_blocking_issues(pre_grouped):
+    _render_checklist(pre_grouped)
+    st.stop()
+
 try:
-    if len(series) < 30:
-        st.error("Insufficient data (need at least 30 rows) in the dataset.")
+    if len(series) < 10:
+        st.error("Insufficient data (need at least 10 rows) in the dataset.")
     else:
-        results = run_benchmark(series, test_fraction=0.2)
+        # Single required mode: Predict missing targets at the end
+        feature_cols = [c for c in series.columns if c not in ("ds", "y")]
+        y_notna = series["y"].notna()
+        if not y_notna.any():
+            st.error("No known target values found. Provide history with targets and future rows with empty target.")
+            st.stop()
+        last_observed_idx = int(y_notna[y_notna].index.max())
+        if last_observed_idx >= len(series) - 1:
+            st.error("No future rows detected. Append future dates (and features if present) with empty target at the end.")
+            st.stop()
+
+        # Benchmark only on known rows
+        series_for_benchmark = series.iloc[: last_observed_idx + 1].dropna(subset=["y"]).copy()
+        results = run_benchmark(series_for_benchmark, test_fraction=0.2)
 
         import matplotlib.pyplot as plt
 
@@ -238,7 +243,7 @@ try:
         # Determine best model name early for optional filtering of plotted forecasts
         best_name = None
         if len(results) > 0:
-            best_name = sorted(results, key=lambda r: r["nrmse"])[0]["name"]
+            best_name = sorted(results, key=lambda r: r.get("mape", float("inf")))[0]["name"]
 
         # Optionally restrict actuals to only the test window
         visible_series = series
@@ -270,12 +275,37 @@ try:
 
             ax.plot(plot_df["ds"], plot_df["yhat"], linestyle="--", linewidth=1.8, label=label)
 
-        # Compute and plot future forecast (+20%) using the best benchmarked model
+        # Compute and plot predictions for the provided future rows
         future_horizon = None
         if best_name is not None:
             name_to_est = {name: est for name, est in get_fast_estimators()}
-            if best_name in name_to_est:
-                future_df = train_full_and_forecast_future(series, name_to_est[best_name], horizon_fraction=0.2)
+            ranked = sorted(results, key=lambda r: r.get("mape", float("inf")))
+            chosen_res = None
+            for res in ranked:
+                if res["name"] in name_to_est:
+                    chosen_res = res
+                    break
+            if chosen_res is not None:
+                chosen_name = chosen_res["name"]
+                # Reuse exact hyperparameters from benchmarking for retrain
+                try:
+                    best_params = chosen_res.get("estimator_params", {})
+                    if best_params:
+                        try:
+                            name_to_est[chosen_name].set_params(**best_params)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Predict exactly the trailing missing targets using provided future rows (with features if present)
+                future_rows = series.iloc[last_observed_idx + 1 :][["ds"] + feature_cols]
+                future_df = train_on_known_and_forecast_missing(
+                    series,
+                    name_to_est[chosen_name],
+                    future_rows=future_rows,
+                )
+
                 # Prepend the last actual point to the future forecast to avoid gap
                 last_actual = series.sort_values("ds").tail(1)
                 if not last_actual.empty:
@@ -301,8 +331,39 @@ try:
         ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=10, frameon=False)
         ax.grid(alpha=0.3)
         fig.tight_layout(rect=(0, 0, 0.8, 1))
-        with plot_col:
-            st.pyplot(fig)
+        st.pyplot(fig)
+        # Controls rendered under the graph (they update session_state and trigger rerun)
+        controls_container = st.container()
+        with controls_container:
+            # New user-facing toggles propose showing additional content. Defaults are unchecked (False),
+            # while underlying state keeps content hidden by default.
+            st.checkbox(
+                "Show full history",
+                key="show_full_history",
+                value=st.session_state.get("show_full_history", False)
+            )
+            st.session_state["show_only_test"] = not st.session_state.get("show_full_history", False)
+
+            st.checkbox(
+                "Show all model forecasts",
+                key="show_all_model_forecasts",
+                value=st.session_state.get("show_all_model_forecasts", False)
+            )
+            st.session_state["hide_non_chosen_models"] = not st.session_state.get("show_all_model_forecasts", False)
+
+            st.checkbox(
+                "Show model comparison table",
+                key="show_model_comparison_table",
+                value=st.session_state.get("show_model_comparison_table", False)
+            )
+            st.session_state["hide_table"] = not st.session_state.get("show_model_comparison_table", False)
+
+            st.checkbox(
+                "Show training data preview",
+                key="show_training_data_preview",
+                value=st.session_state.get("show_training_data_preview", False)
+            )
+            st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
         # Optional: show the dataframe used for training/prediction (first 5 rows)
         if not hide_features_table:
@@ -315,7 +376,7 @@ try:
 
         # Metrics table with timing
         table_rows = [{
-            "Model": r["name"], METRIC_NAME: r["nrmse"],
+            "Model": r["name"], METRIC_NAME: r.get("mape", None),
             "Train (s)": r.get("train_time_s", None),
             "Predict (s)": r.get("predict_time_s", None)
         } for r in results]
@@ -324,30 +385,15 @@ try:
             st.markdown("#### Benchmark results")
             st.dataframe(table_df, use_container_width=True)
 
-        # Update progress container (simple checklist continuation)
-        with progress_container:
-            success_icon, warn_icon, error_icon = "✅", "⚠️", "❌"
-            # Best model and accuracy
-            if len(results) > 0 and best_name is not None:
-                best_result = sorted(results, key=lambda r: r["nrmse"])[0]
-                best_nrmse = float(best_result.get("nrmse", 0.0))
-                accuracy_pct = max(0.0, min(1.0, 1.0 - best_nrmse)) * 100.0
-                st.markdown(f"<div {line_style}>{success_icon} Best model: {best_name}</div>", unsafe_allow_html=True)
-                # Color-coded accuracy icon
-                if accuracy_pct >= 80.0:
-                    acc_icon = success_icon  # green
-                elif accuracy_pct >= 60.0:
-                    acc_icon = warn_icon    # yellow
-                else:
-                    acc_icon = error_icon   # red
-                st.markdown(f"<div {line_style}>{acc_icon} Model accuracy: {accuracy_pct:.0f}%</div>", unsafe_allow_html=True)
-            if future_horizon is not None:
-                st.markdown(f"<div {line_style}>{success_icon} Point predicted: {future_horizon}</div>", unsafe_allow_html=True)
-
-        # Preprocessing analysis (for feature engineering insight)
+        # Render checklist in sidebar grouped by module
         try:
-            prep_info = analyze_preprocessing(series)
+            file_info_local = locals().get('file_info', {})
+            raw_df_local = locals().get('raw_df', pd.DataFrame())
+            grouped = build_checklist_grouped(raw_df_local, file_info_local, series, load_meta, results, future_horizon or 0)
+            _render_checklist(grouped)
         except Exception:
-            prep_info = {}
-except Exception as e:
-    st.error(f"Failed to run forecast: {e}")
+            pass
+
+except Exception:
+    # Suppress main-screen error banners; checklist already provides feedback
+    _render_checklist(pre_grouped)

@@ -1,13 +1,15 @@
 # Time Series Forecasting (Daily Regression)
 
-A lightweight Streamlit app that benchmarks a simple multiple linear regression on daily time series and visualizes the forecast versus actuals.
+A lightweight Streamlit app that benchmarks several fast regressors and a few classic time‑series baselines on daily data, and visualizes the forecast versus actuals.
 
 ## Overview
 
-- **Model**: Multiple linear regression with lag (1, 7) and day-of-week features
-- **Metric**: nRMSE on the last 20% of each dataset (holdout)
-- **Datasets**: CSVs with two columns: time (first), target (last), daily frequency
-- **UI**: One-page layout with a results table and a simple forecast plot
+- **Models (scikit‑learn)**: Ridge, Lasso, ElasticNet, KNN, GradientBoosting, RandomForest, SVR
+- **Baselines (optional)**: SARIMA, Prophet (yearly+weekly). Optional libs auto‑disable if not installed
+- **Features**: Lags, moving averages, day‑of‑week, global trend, Fourier seasonality (weekly, monthly, quarterly, yearly, biannual)
+- **Metric**: MAPE on the last 20% of each dataset (holdout)
+- **Datasets**: CSVs with time (first), optional features (middle), target (last)
+- **UI**: One‑page layout with a results table and a simple forecast plot
 
 ## How to run
 
@@ -16,9 +18,46 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+Then open `http://localhost:8501` in your browser.
+
+If `pip` or `streamlit` aren't on your PATH (especially on Windows), use:
+
+```bash
+python -m pip install -r requirements.txt
+python -m streamlit run streamlit_app.py
+```
+
+You can upload your own CSV (time column first, target last), or just run with the bundled `sample.csv`.
+
+## Data format and workflow
+
+- Provide history with known target values.
+- Append future dates at the end with target left blank and all feature columns filled (if features are used).
+- The app trains on known rows and predicts targets for the trailing future rows you provided. There is no auto 20% extension mode.
+
+Example with features:
+
+```csv
+date,price_tier,web_traffic_k,is_weekend,product_line,target
+2024-03-29,1,11.5,No,Beta,113.8
+2024-03-30,2,89.2,Yes,Gamma,147.1
+2024-03-31,1,98.3,Yes,Alpha,
+2024-04-01,2,19.8,No,Beta,
+```
+
+Example without features:
+
+```csv
+Date,Sold
+2019-11-29,837
+2019-11-30,842
+2019-12-01,
+2019-12-02,
+```
+
 ## What you’ll see
 
-- A table with per‑dataset nRMSE (computed on demand)
+- A table with per‑dataset MAPE (computed on demand)
 - Pick a dataset and a Matplotlib plot of actuals and forecast for the test window
 
 ## Dependencies
@@ -34,3 +73,14 @@ See `requirements.txt` for exact versions.
 
 - Assumes daily frequency with regular 1‑day intervals (no gaps). If not, please resample/fill before use.
 - Uses Streamlit session state to keep selection across edits.
+- Prophet is optional and not pinned here to keep installation light. To enable it:
+
+  ```bash
+  pip install prophet
+  ```
+
+  If Prophet isn’t present, the app will skip that baseline automatically.
+
+## Checklist
+
+add later
