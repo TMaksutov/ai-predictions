@@ -11,6 +11,83 @@ import pandas as pd
 from features import analyze_preprocessing
 
 
+def _normalize_trailing_separators(raw_bytes: bytes, sep_hint: Optional[str]) -> Tuple[bytes, Optional[str], dict]:
+    """
+    Ensure rows that are missing a trailing empty field (i.e., missing the final
+    separator when the last value is blank) are normalized by appending the
+    separator at the end of such lines.
+
+    Returns potentially modified bytes and the (possibly unchanged) separator.
+    """
+    try:
+        text = raw_bytes.decode(errors="ignore")
+    except Exception:
+        return raw_bytes, sep_hint, {"lines_fixed": 0}
+
+    # Determine separator to use for normalization
+    sep = sep_hint if sep_hint in {",", ";", "\t", "|"} else None
+    if sep is None:
+        # Heuristic: pick the first likely delimiter present in the header line
+        first_line = text.splitlines()[0] if text else ""
+        for cand in [",", ";", "\t", "|"]:
+            if cand in first_line:
+                sep = cand
+                break
+    if not sep:
+        return raw_bytes, sep_hint, {"lines_fixed": 0}
+
+    # Keep line endings while processing
+    lines = text.splitlines(True)
+    if not lines:
+        return raw_bytes, sep, {"lines_fixed": 0}
+
+    # Compute expected number of separators per line by majority vote
+    from collections import Counter
+
+    def count_sep(s: str) -> int:
+        core = s.rstrip("\r\n")
+        return core.count(sep)
+
+    counts = [count_sep(l) for l in lines if sep in l]
+    if not counts:
+        return raw_bytes, sep, {"lines_fixed": 0}
+    expected = Counter(counts).most_common(1)[0][0]
+
+    # Normalize lines that are short by exactly one trailing separator
+    changed = False
+    lines_fixed = 0
+    normalized_parts: List[str] = []
+    for l in lines:
+        # Preserve original line ending
+        line_ending = ""
+        if l.endswith("\r\n"):
+            line_ending = "\r\n"
+            core = l[:-2]
+        elif l.endswith("\n"):
+            line_ending = "\n"
+            core = l[:-1]
+        elif l.endswith("\r"):
+            line_ending = "\r"
+            core = l[:-1]
+        else:
+            core = l
+
+        current_count = core.count(sep)
+        if core and (current_count == expected - 1) and (not core.endswith(sep)):
+            core = core + sep
+            changed = True
+            lines_fixed += 1
+        normalized_parts.append(core + line_ending)
+
+    if not changed:
+        return raw_bytes, sep, {"lines_fixed": 0}
+
+    normalized_text = "".join(normalized_parts)
+    try:
+        return normalized_text.encode(), sep, {"lines_fixed": lines_fixed}
+    except Exception:
+        return raw_bytes, sep, {"lines_fixed": 0}
+
 def read_table_any(file_obj_or_path):
     """
     Read an uploaded file strictly as CSV with robust delimiter and header detection.
@@ -40,29 +117,54 @@ def read_table_any(file_obj_or_path):
     name = None
     size_bytes = None
     buf_for_sniff = None
-    if hasattr(file_obj_or_path, "name"):
+    raw_bytes = None
+    is_file_like = hasattr(file_obj_or_path, "read") or hasattr(file_obj_or_path, "getvalue")
+    if is_file_like:
         name = getattr(file_obj_or_path, "name", None)
         size_bytes = getattr(file_obj_or_path, "size", None)
+        # Read a small head sample without consuming the stream permanently
+        head_bytes = b""
         try:
-            head_bytes = file_obj_or_path.getvalue()[:4096]
-        except Exception:
-            try:
+            if hasattr(file_obj_or_path, "getvalue"):
+                head_bytes = file_obj_or_path.getvalue()[:4096]
+            else:
                 head_bytes = file_obj_or_path.read(4096)
+                try:
+                    file_obj_or_path.seek(0)
+                except Exception:
+                    pass
+        except Exception:
+            head_bytes = b""
+        buf_for_sniff = head_bytes
+        # Capture full bytes for normalization
+        try:
+            if hasattr(file_obj_or_path, "getvalue"):
+                raw_bytes = file_obj_or_path.getvalue()
+            else:
+                raw_bytes = file_obj_or_path.read()
+        except Exception:
+            raw_bytes = None
+        finally:
+            try:
                 file_obj_or_path.seek(0)
             except Exception:
-                head_bytes = b""
-        buf_for_sniff = head_bytes
+                pass
     else:
-        name = str(file_obj_or_path)
+        # Treat as path-like
+        path_str = str(file_obj_or_path)
+        name = path_str
         try:
-            size_bytes = os.path.getsize(file_obj_or_path)
+            size_bytes = os.path.getsize(path_str)
         except Exception:
             size_bytes = None
         try:
-            with open(file_obj_or_path, "rb") as f:
+            with open(path_str, "rb") as f:
                 buf_for_sniff = f.read(4096)
+            with open(path_str, "rb") as f:
+                raw_bytes = f.read()
         except Exception:
             buf_for_sniff = b""
+            raw_bytes = None
 
     ext = (Path(name).suffix or "").lower() if name else ""
     info["file_type"] = (ext.replace(".", "") or "unknown")
@@ -93,22 +195,19 @@ def read_table_any(file_obj_or_path):
                 break
     info["separator"] = detected_sep or "auto"
 
-    # Ensure we don't consume the original file-like object's pointer
-    read_target = file_obj_or_path
-    if hasattr(file_obj_or_path, "getvalue"):
-        try:
-            raw_bytes = file_obj_or_path.getvalue()
-        except Exception:
-            try:
-                raw_bytes = file_obj_or_path.read()
-            finally:
-                try:
-                    file_obj_or_path.seek(0)
-                except Exception:
-                    pass
-        read_target = io.BytesIO(raw_bytes if isinstance(raw_bytes, (bytes, bytearray)) else bytes(str(raw_bytes), "utf-8"))
+    # Prepare a BytesIO target, normalizing trailing separators if needed
+    if raw_bytes is None:
+        read_target = file_obj_or_path
+    else:
+        normalized_bytes, _, norm_stats = _normalize_trailing_separators(
+            raw_bytes if isinstance(raw_bytes, (bytes, bytearray)) else bytes(str(raw_bytes), "utf-8"),
+            detected_sep,
+        )
+        read_target = io.BytesIO(normalized_bytes)
+        # Surface normalization stats to info after it's created
 
     # Read with header=None first; we will detect header manually
+    normalization_lines_fixed = 0
     try:
         if detected_sep is None:
             raw_df = pd.read_csv(read_target, sep=None, engine="python", header=None, dtype=str)
@@ -170,6 +269,26 @@ def read_table_any(file_obj_or_path):
 
     info["header_detected"] = bool(header_detected)
     info["n_rows"], info["n_cols"] = int(df.shape[0]), int(df.shape[1])
+    # Attach normalization stats if available
+    try:
+        info["trailing_separator_lines_fixed"] = norm_stats.get("lines_fixed", 0)  # type: ignore[name-defined]
+    except Exception:
+        info["trailing_separator_lines_fixed"] = 0
+
+    # Detect trailing blank last-column region for user visibility
+    try:
+        last_col_series = df.iloc[:, -1]
+        isna = pd.to_numeric(last_col_series, errors="coerce").isna()
+        # Allow blank only at the end; compute consecutive blanks from end
+        trailing_blank = 0
+        for val in reversed(isna.tolist()):
+            if val:
+                trailing_blank += 1
+            else:
+                break
+        info["trailing_blank_last_col_rows"] = int(trailing_blank)
+    except Exception:
+        info["trailing_blank_last_col_rows"] = None
 
     return df, info
 
@@ -421,28 +540,9 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     if numeric_series is not None:
         nunique = int(pd.Series(numeric_series).nunique(dropna=True))
         add("Open & analyze", f"Target variability: unique values={nunique}", "warn" if nunique <= 1 else "ok")
-        # Outlier check via z-score
-        try:
-            s = pd.Series(numeric_series).astype(float)
-            mean = float(s.mean())
-            std = float(s.std(ddof=0))
-            if std > 0:
-                zmax = float(((s - mean).abs() / std).max())
-                add("Open & analyze", f"Target outliers (|z|>6): {'yes' if zmax > 6 else 'no'}", "warn" if zmax > 6 else "ok")
-            else:
-                add("Open & analyze", "Target outliers: not applicable (zero variance)", "warn")
-        except Exception:
-            add("Open & analyze", "Target outliers: check failed", "warn")
 
-    #  - Future date presence (rows after last observed target)
-    if parsed_dates is not None:
-        try:
-            has_future = False
-            if last_observed_idx is not None and last_observed_idx < len(parsed_dates) - 1:
-                has_future = True
-            add("Open & analyze", "Contains future dates", "ok" if has_future else "warn")
-        except Exception:
-            pass
+
+
 
     # Optional intermediate feature columns and future feature completeness
     feature_cols = []

@@ -7,7 +7,8 @@ A lightweight Streamlit app that benchmarks several fast regressors and a few cl
 - **Models (scikit‑learn)**: Ridge, Lasso, ElasticNet, KNN, GradientBoosting, RandomForest, SVR
 - **Baselines (optional)**: SARIMA, Prophet (yearly+weekly). Optional libs auto‑disable if not installed
 - **Features**: Lags, moving averages, day‑of‑week, global trend, Fourier seasonality (weekly, monthly, quarterly, yearly, biannual)
-- **Metric**: MAPE on the last 20% of each dataset (holdout)
+- **Architecture**: Unified training and retraining system with consistent feature engineering
+- **Metric**: RMSE on the last 20% of each dataset (holdout)
 - **Datasets**: CSVs with time (first), optional features (middle), target (last)
 - **UI**: One‑page layout with a results table and a simple forecast plot
 
@@ -57,7 +58,7 @@ Date,Sold
 
 ## What you’ll see
 
-- A table with per‑dataset MAPE (computed on demand)
+- A table with per‑dataset RMSE (computed on demand)
 - Pick a dataset and a Matplotlib plot of actuals and forecast for the test window
 
 ## Dependencies
@@ -68,19 +69,3 @@ Date,Sold
 - scikit-learn (regression)
 
 See `requirements.txt` for exact versions.
-
-## Notes
-
-- Assumes daily frequency with regular 1‑day intervals (no gaps). If not, please resample/fill before use.
-- Uses Streamlit session state to keep selection across edits.
-- Prophet is optional and not pinned here to keep installation light. To enable it:
-
-  ```bash
-  pip install prophet
-  ```
-
-  If Prophet isn’t present, the app will skip that baseline automatically.
-
-## Checklist
-
-add later

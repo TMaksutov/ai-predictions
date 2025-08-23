@@ -4,19 +4,16 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer
 
+# Import configuration
+try:
+    from utils.config import LAG_PERIODS, MOVING_AVERAGE_WINDOWS
+except ImportError:
+    # Fallback values if config not available
+    LAG_PERIODS = [1, 7]
+    MOVING_AVERAGE_WINDOWS = [7]
 
-def _fourier_terms_from_trend(trend: pd.Series, period: int, order: int, prefix: str) -> pd.DataFrame:
-    """Create Fourier series terms using an integer day trend index.
 
-    Columns are named like: f"{prefix}_p{period}_k{order}_{sin|cos}".
-    """
-    cols: Dict[str, List[float]] = {}
-    t = trend.astype(float)
-    for k in range(1, int(order) + 1):
-        angle = 2.0 * np.pi * k * (t / float(period))
-        cols[f"fourier_p{int(period)}_k{k}_sin"] = np.sin(angle)
-        cols[f"fourier_p{int(period)}_k{k}_cos"] = np.cos(angle)
-    return pd.DataFrame(cols, index=trend.index)
+# Note: Fourier terms functionality removed to simplify the feature engineering pipeline
 
 
 def sanitize_feature_token(token: str) -> str:
@@ -70,16 +67,13 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
     df = series_df.copy()
     df = df.sort_values("ds").reset_index(drop=True)
 
-    # Lags (no filling; preserve missing values)
-    df["lag1"] = df["y"].shift(1)
-    df["lag7"] = df["y"].shift(7)
-    df["lag14"] = df["y"].shift(14)
-    df["lag28"] = df["y"].shift(28)
+    # Create lag features dynamically from configuration
+    for lag in LAG_PERIODS:
+        df[f"lag{lag}"] = df["y"].shift(lag)
 
-    # Rolling means (preserve missing values for early rows; shift to avoid leakage)
-    df["ma7"] = df["y"].rolling(window=7, min_periods=1).mean().shift(1)
-    df["ma14"] = df["y"].rolling(window=14, min_periods=1).mean().shift(1)
-    df["ma28"] = df["y"].rolling(window=28, min_periods=1).mean().shift(1)
+    # Create moving average features dynamically from configuration
+    for window in MOVING_AVERAGE_WINDOWS:
+        df[f"ma{window}"] = df["y"].rolling(window=window, min_periods=1).mean().shift(1)
 
     # DOW one-hot
     df["dow"] = df["ds"].dt.dayofweek.astype(int)
@@ -88,60 +82,26 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
     # Global linear trend (days since start)
     df["trend"] = (df["ds"] - df["ds"].min()).dt.days.astype(int)
 
-    # Fourier seasonality terms
-    # - Weekly (7)
-    # - Monthly (30) and Quarterly (90) to capture sub-annual cycles
-    # - Yearly (365) with higher order for richer seasonality
-    # - Biannual (730) for slower cycles observed in some notebooks
-    fourier_weekly = _fourier_terms_from_trend(df["trend"], period=7, order=3, prefix="fourier")
-    fourier_monthly = _fourier_terms_from_trend(df["trend"], period=30, order=3, prefix="fourier")
-    fourier_quarterly = _fourier_terms_from_trend(df["trend"], period=90, order=2, prefix="fourier")
-    fourier_yearly = _fourier_terms_from_trend(df["trend"], period=365, order=6, prefix="fourier")
-    fourier_biannual = _fourier_terms_from_trend(df["trend"], period=730, order=2, prefix="fourier")
+    # No Fourier terms - relying on day-of-week dummies for weekly patterns
+    # and trend for long-term patterns
 
-    base_block = df[[
-        "ds",
-        "y",
-        "lag1",
-        "lag7",
-        "lag14",
-        "lag28",
-        "ma7",
-        "ma14",
-        "ma28",
-        "trend",
-    ]]
-    features = pd.concat([
-        base_block,
-        dow_dummies,
-        fourier_weekly,
-        fourier_monthly,
-        fourier_quarterly,
-        fourier_yearly,
-        fourier_biannual,
-    ], axis=1)
-    feature_cols = [
-        "lag1",
-        "lag7",
-        "lag14",
-        "lag28",
-        "ma7",
-        "ma14",
-        "ma28",
-        "trend",
-    ] + list(dow_dummies.columns) \
-        + list(fourier_weekly.columns) \
-        + list(fourier_monthly.columns) \
-        + list(fourier_quarterly.columns) \
-        + list(fourier_yearly.columns) \
-        + list(fourier_biannual.columns)
+    # Build base feature list dynamically
+    base_features = ["ds", "y", "trend"]
+    base_features.extend([f"lag{lag}" for lag in LAG_PERIODS])
+    base_features.extend([f"ma{window}" for window in MOVING_AVERAGE_WINDOWS])
 
-    # Exogenous
-    exog_exclude = {
-        "lag1", "lag7", "lag14", "lag28",
-        "ma7", "ma14", "ma28",
-        "dow", "trend",
-    }
+    base_block = df[base_features]
+    features = pd.concat([base_block, dow_dummies], axis=1)
+
+    # Build feature columns list dynamically
+    feature_cols = [f"lag{lag}" for lag in LAG_PERIODS]
+    feature_cols.extend([f"ma{window}" for window in MOVING_AVERAGE_WINDOWS])
+    feature_cols.extend(["trend"] + list(dow_dummies.columns))
+
+    # Exogenous features - exclude time series features we've already created
+    exog_exclude = {"dow", "trend"}
+    exog_exclude.update([f"lag{lag}" for lag in LAG_PERIODS])
+    exog_exclude.update([f"ma{window}" for window in MOVING_AVERAGE_WINDOWS])
     exog_cols = [c for c in df.columns if c not in ["ds", "y"] and c not in exog_exclude]
     num_exog_numeric = 0
     num_exog_categorical = 0

@@ -1,0 +1,209 @@
+"""
+Plotting utilities for time series forecasting visualizations.
+"""
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from typing import Optional, Set
+
+
+def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.DataFrame = None,
+                        show_only_test: bool = True, split_ds = None,
+                        hide_non_chosen_models: bool = True, best_name: str = None,
+                        visible_models: Optional[Set[str]] = None):
+    """
+    Create a comprehensive forecast plot with actuals and model predictions.
+    """
+    fig, ax = plt.subplots(figsize=(20, 6))
+
+    # Optionally restrict actuals to only the test window
+    visible_series = series
+    if show_only_test and split_ds is not None:
+        # Include the last training point to avoid gaps with predictions
+        test_data = series[series["ds"] >= split_ds]
+        last_train_point = series[series["ds"] < split_ds].tail(1)
+        if not last_train_point.empty:
+            visible_series = pd.concat([last_train_point, test_data], ignore_index=True)
+        else:
+            visible_series = test_data
+
+    # Calculate fixed y-axis limits based on actuals and visible model predictions
+    # This ensures consistent scaling regardless of which models are shown
+    y_min, y_max = visible_series["y"].min(), visible_series["y"].max()
+
+    # Consider forecasts and future predictions only for visible models (if provided)
+    for res in results:
+        name = res.get("name")
+        if visible_models is not None and name not in visible_models:
+            continue
+        fcast = res.get("forecast_df")
+        if fcast is not None and not fcast.empty:
+            y_min = min(y_min, fcast["yhat"].min())
+            y_max = max(y_max, fcast["yhat"].max())
+        fdf = res.get("future_df")
+        if fdf is not None and not fdf.empty:
+            y_min = min(y_min, fdf["yhat"].min())
+            y_max = max(y_max, fdf["yhat"].max())
+    # Also consider single future_df if passed explicitly
+    if future_df is not None and not future_df.empty:
+        y_min = min(y_min, future_df["yhat"].min())
+        y_max = max(y_max, future_df["yhat"].max())
+
+    # Add some padding to the y-axis limits (5% on each side)
+    y_range = y_max - y_min
+    y_padding = y_range * 0.05
+    y_min -= y_padding
+    y_max += y_padding
+
+    # Build a stable color mapping so the same model keeps the same color
+    try:
+        default_colors = plt.rcParams.get('axes.prop_cycle').by_key().get('color', [])
+    except Exception:
+        default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+    # Determine which model names will be plotted (respect visibility/hide flags)
+    names_in_plot = []
+    for res in results:
+        name = res.get("name")
+        if visible_models is not None and name not in visible_models:
+            continue
+        if visible_models is None and hide_non_chosen_models and best_name is not None and name != best_name:
+            continue
+        names_in_plot.append(name)
+
+    name_to_color = {}
+    if default_colors:
+        for idx, name in enumerate(names_in_plot):
+            name_to_color[name] = default_colors[idx % len(default_colors)]
+
+    # Plot actual values
+    ax.plot(visible_series["ds"], visible_series["y"], linewidth=2, alpha=0.85,
+            color="#222", label="Actual")
+
+    # Plot each model's forecast
+    for res in results:
+        # Respect explicit per-model visibility first
+        if visible_models is not None and res["name"] not in visible_models:
+            continue
+        # Optionally skip non-chosen models if no explicit visibility provided
+        if visible_models is None and hide_non_chosen_models and best_name is not None and res["name"] != best_name:
+            continue
+
+        forecast_df = res["forecast_df"]
+        if forecast_df.empty:
+            continue
+
+        label = res['name']
+
+        # Prepend the last actual point to avoid visual gap
+        if not forecast_df.empty:
+            # Use visible_series to ensure consistent connection points
+            last_visible_for_forecast = visible_series.sort_values("ds").tail(1)
+            if not last_visible_for_forecast.empty:
+                # Add connection point at the exact same date as the last known point
+                connection_point = pd.DataFrame({
+                    "ds": [last_visible_for_forecast["ds"].iloc[0]],
+                    "yhat": [last_visible_for_forecast["y"].iloc[0]]
+                })
+                plot_df = pd.concat([connection_point, forecast_df], ignore_index=True)
+            else:
+                plot_df = forecast_df
+        else:
+            plot_df = forecast_df
+
+        ax.plot(
+            plot_df["ds"], plot_df["yhat"],
+            linestyle="--",
+            linewidth=1.8,
+            color=name_to_color.get(label, None),
+            label=label,
+        )
+
+    # Plot future predictions. Prefer per-model forecasts if present; otherwise use single future_df
+    has_per_model_future = any((res.get("future_df") is not None and not res.get("future_df").empty) for res in results)
+    if has_per_model_future:
+        last_known_actual = (
+            visible_series.dropna(subset=["y"]).sort_values("ds").tail(1)
+        )
+        for res in results:
+            # Respect explicit per-model visibility first
+            if visible_models is not None and res["name"] not in visible_models:
+                continue
+            # Optionally skip non-chosen models if no explicit visibility provided
+            if visible_models is None and hide_non_chosen_models and best_name is not None and res["name"] != best_name:
+                continue
+            fdf = res.get("future_df")
+            if fdf is None or fdf.empty:
+                continue
+
+            if not last_known_actual.empty:
+                connection_point = pd.DataFrame({
+                    "ds": [last_known_actual["ds"].iloc[0]],
+                    "yhat": [last_known_actual["y"].iloc[0]]
+                })
+                f_plot = pd.concat([connection_point, fdf], ignore_index=True)
+            else:
+                f_plot = fdf
+
+            is_best = (best_name is not None and res["name"] == best_name)
+            ax.plot(
+                f_plot["ds"], f_plot["yhat"],
+                linestyle="-",
+                linewidth=(2.2 if is_best else 1.8),
+                color=name_to_color.get(res["name"], None),
+                label=None,  # avoid duplicate legend entries; keep legend from forecast lines
+            )
+    elif future_df is not None and not future_df.empty:
+        # Ensure prediction line starts from the last known NON-NaN actual to eliminate any gap
+        last_known_actual = (
+            visible_series.dropna(subset=["y"]).sort_values("ds").tail(1)
+        )
+        if not last_known_actual.empty:
+            # Add a connection point at the exact same date as the last known point
+            connection_point = pd.DataFrame({
+                "ds": [last_known_actual["ds"].iloc[0]],
+                "yhat": [last_known_actual["y"].iloc[0]]
+            })
+            # Combine connection point with future predictions
+            future_plot_df = pd.concat([connection_point, future_df], ignore_index=True)
+        else:
+            future_plot_df = future_df
+
+        # Use best model name in legend instead of generic "Prediction"
+        # Use the best model's color for the shared future line (if known), keep legend from forecast
+        best_color = name_to_color.get(best_name, None)
+        ax.plot(
+            future_plot_df["ds"], future_plot_df["yhat"],
+            linestyle="-", linewidth=2.2, color=best_color, label=None
+        )
+
+    # Add vertical line for train/test split
+    if split_ds is not None and not show_only_test:
+        ax.axvline(split_ds, linestyle=":", linewidth=1, alpha=0.7)
+
+    # Set fixed y-axis limits to maintain consistent scale
+    ax.set_ylim(y_min, y_max)
+
+    # Styling
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Value")
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=10, frameon=False)
+    ax.grid(alpha=0.3)
+    fig.tight_layout(rect=(0, 0, 0.8, 1))
+
+    return fig
+
+
+def create_results_table(results: list, metric_name: str = "RMSE"):
+    """Create a formatted results table from benchmark results."""
+    table_rows = []
+    for r in results:
+        table_rows.append({
+            "Model": r["name"],
+            metric_name: r.get("rmse", None),
+            "Train (s)": r.get("train_time_s", None),
+            "Predict (s)": r.get("predict_time_s", None)
+        })
+
+    table_df = pd.DataFrame(table_rows).sort_values(metric_name).reset_index(drop=True)
+    return table_df

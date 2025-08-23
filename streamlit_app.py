@@ -3,10 +3,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from modeling import get_fast_estimators, train_full_and_forecast_future
-from modeling import train_on_known_and_forecast_missing
+from modeling import train_on_known_and_forecast_missing, UnifiedTimeSeriesTrainer
 from features import build_features as _build_features
 from data_io import read_table_any as _read_table_any
 from data_io import build_checklist_grouped
+from utils.data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
+from utils.plot_utils import create_forecast_plot, create_results_table
 import io
 
 st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
@@ -29,19 +31,41 @@ st.markdown(
 )
 
 SAMPLE_PATH = Path(__file__).parent / "sample.csv"
-METRIC_NAME = "MAPE"
+METRIC_NAME = "RMSE"
 
 # Utilities, I/O helpers, and checklist provided by: data_io.py, modeling.py, features.py
 
-def run_benchmark(series_df: pd.DataFrame, test_fraction: float = 0.2):
-    from modeling import benchmark_models
-    return benchmark_models(series_df, test_fraction=test_fraction)
+def _df_fingerprint(df: pd.DataFrame) -> str:
+    """Create a stable fingerprint for a dataframe to use as a cache key."""
+    try:
+        # Sum of hash objects is deterministic for the same content in a session
+        return str(pd.util.hash_pandas_object(df, index=True).sum())
+    except Exception:
+        # Fallback to a coarse fingerprint
+        try:
+            ds_min = pd.to_datetime(df["ds"]).min()
+            ds_max = pd.to_datetime(df["ds"]).max()
+            count_y = int(df["y"].notna().sum()) if "y" in df.columns else 0
+            return f"shape={df.shape}|{ds_min}|{ds_max}|y_count={count_y}"
+        except Exception:
+            return f"shape={df.shape}"
+
+def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
+    if test_fraction is None:
+        try:
+            from utils.config import DEFAULT_TEST_FRACTION
+            test_fraction = DEFAULT_TEST_FRACTION
+        except ImportError:
+            test_fraction = 0.2
+
+    trainer = UnifiedTimeSeriesTrainer()
+    return trainer.benchmark_models(series_df, test_fraction=test_fraction)
 
 
  # -----------------------------
  # UI
  # -----------------------------
-# Single upload control
+# Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
     "Upload a CSV (date column first, target last)",
     type=["csv"],
@@ -49,91 +73,16 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
 )
 
-# Note: Keep raw_df/file_info/series/load_meta consistent. If an uploaded file has
-# errors, do not fall back to default; show the checklist instead.
-data_source_name = None
-series = None
-raw_df = pd.DataFrame()
-file_info = {"error": None, "file_type": None, "n_rows": None, "n_cols": None, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
-load_meta = {"original_time_col": None, "original_target_col": None, "trailing_missing_count": 0, "last_known_ds": None, "future_rows_raw": pd.DataFrame()}
-
+# Load data using simplified logic
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
-    try:
-        raw_df, file_info = _read_table_any(uploaded)
-    except Exception as e:
-        file_info = {"error": f"Read failed: {e}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
-
-    if not file_info.get("error"):
-        try:
-            # Build a clean series avoiding duplicate 'ds'/'y' labels regardless of original headers
-            orig_cols = list(raw_df.columns)
-            first_col = orig_cols[0]
-            last_col = orig_cols[-1]
-
-            ds_series = pd.to_datetime(raw_df[first_col], errors="coerce")
-            y_series = pd.to_numeric(raw_df[last_col], errors="coerce")
-
-            series = pd.DataFrame({
-                "ds": ds_series,
-                "y": y_series,
-            })
-            # Attach intermediate feature columns if any, skipping any that collide with 'ds'/'y'
-            for c in orig_cols[1:-1]:
-                if c in ("ds", "y"):
-                    continue
-                series[c] = raw_df[c]
-
-            series = series.sort_values("ds").reset_index(drop=True)
-            load_meta = {
-                "original_time_col": first_col,
-                "original_target_col": last_col,
-                "trailing_missing_count": 0,
-                "last_known_ds": series["ds"].max() if not series.empty else None,
-                "future_rows_raw": pd.DataFrame(),
-            }
-        except Exception as e:
-            file_info = {**file_info, "error": f"Build series failed: {e}"}
+    raw_df, file_info = _read_table_any(uploaded)
 else:
-    # No upload; use default
-    default_path = SAMPLE_PATH
-    data_source_name = default_path.name
-    if default_path.exists():
-        try:
-            raw_df, file_info = _read_table_any(default_path)
-        except Exception as e:
-            file_info = {"error": f"Read failed: {e}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
-        if not file_info.get("error"):
-            try:
-                # Build a clean series avoiding duplicate 'ds'/'y' labels for the default dataset as well
-                orig_cols = list(raw_df.columns)
-                first_col = orig_cols[0]
-                last_col = orig_cols[-1]
+    data_source_name = SAMPLE_PATH.name
+    raw_df, file_info = load_default_dataset(SAMPLE_PATH)
 
-                ds_series = pd.to_datetime(raw_df[first_col], errors="coerce")
-                y_series = pd.to_numeric(raw_df[last_col], errors="coerce")
-
-                series = pd.DataFrame({
-                    "ds": ds_series,
-                    "y": y_series,
-                })
-                for c in orig_cols[1:-1]:
-                    if c in ("ds", "y"):
-                        continue
-                    series[c] = raw_df[c]
-
-                series = series.sort_values("ds").reset_index(drop=True)
-                load_meta = {
-                    "original_time_col": first_col,
-                    "original_target_col": last_col,
-                    "trailing_missing_count": 0,
-                    "last_known_ds": series["ds"].max() if not series.empty else None,
-                    "future_rows_raw": pd.DataFrame(),
-                }
-            except Exception as e:
-                file_info = {**file_info, "error": f"Build series failed: {e}"}
-    else:
-        file_info = {"error": f"Default data file not found: {default_path}", "file_type": None, "n_rows": 0, "n_cols": 0, "separator": None, "header_detected": None, "header_names": None, "header_renamed_count": 0}
+# Prepare standardized series
+series, load_meta = prepare_series_from_dataframe(raw_df, file_info)
 
 if data_source_name:
     try:
@@ -157,33 +106,24 @@ def _render_checklist(grouped_items):
 # Persisted UI defaults for display controls
 for _key, _default in [
     ("show_only_test", True),
-    ("hide_non_chosen_models", True),
-    ("hide_table", True),
     ("hide_features_table", True),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
 
-# New user-facing toggles default to False (content hidden by default)
+# New user-facing toggles default to sensible values
 for _key, _default in [
     ("show_full_history", False),
-    ("show_all_model_forecasts", False),
-    ("show_model_comparison_table", False),
     ("show_training_data_preview", False),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
 
-# Derive legacy flags from the new toggles so plotting logic uses them immediately
+# Keep legacy flag in sync
 st.session_state["show_only_test"] = not st.session_state.get("show_full_history", False)
-st.session_state["hide_non_chosen_models"] = not st.session_state.get("show_all_model_forecasts", False)
-st.session_state["hide_table"] = not st.session_state.get("show_model_comparison_table", False)
-st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
 # Read current control values from session state (widgets will render under the graph)
 show_only_test = st.session_state.get("show_only_test", True)
-hide_non_chosen_models = st.session_state.get("hide_non_chosen_models", True)
-hide_table = st.session_state.get("hide_table", True)
 hide_features_table = st.session_state.get("hide_features_table", True)
 
 # Build checklist early and gate predictions/features if any non-OK in critical sections
@@ -221,116 +161,199 @@ try:
         if not y_notna.any():
             st.error("No known target values found. Provide history with targets and future rows with empty target.")
             st.stop()
-        last_observed_idx = int(y_notna[y_notna].index.max())
-        if last_observed_idx >= len(series) - 1:
+
+        future_rows, last_observed_idx = get_future_rows(series, feature_cols)
+        if future_rows.empty:
             st.error("No future rows detected. Append future dates (and features if present) with empty target at the end.")
             st.stop()
 
         # Benchmark only on known rows
         series_for_benchmark = series.iloc[: last_observed_idx + 1].dropna(subset=["y"]).copy()
-        results = run_benchmark(series_for_benchmark, test_fraction=0.2)
+        # Import config for default values
+        try:
+            from utils.config import DEFAULT_TEST_FRACTION
+        except ImportError:
+            DEFAULT_TEST_FRACTION = 0.2
 
-        import matplotlib.pyplot as plt
+        # Cache benchmark results so UI toggles do not retrigger training
+        bench_key = f"{_df_fingerprint(series_for_benchmark)}|test_frac={DEFAULT_TEST_FRACTION}"
+        bench_cache = st.session_state.get("bench_cache", {})
+        if bench_key in bench_cache:
+            results = bench_cache[bench_key]
+        else:
+            results = run_benchmark(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
+            bench_cache[bench_key] = results
+            st.session_state["bench_cache"] = bench_cache
 
-        # Plot all forecasts
-        fig, ax = plt.subplots(figsize=(20, 6))
-
-        # All models share same split; use first result for split line and test_df
+        # Get split date for plotting
         split_ds = None
         if len(results) > 0 and len(results[0]["test_df"]) > 0:
             split_ds = results[0]["test_df"]["ds"].iloc[0]
 
-        # Determine best model name early for optional filtering of plotted forecasts
+        # Get best model name
         best_name = None
         if len(results) > 0:
-            best_name = sorted(results, key=lambda r: r.get("mape", float("inf")))[0]["name"]
+            best_name = sorted(results, key=lambda r: r.get("rmse", float("inf")))[0]["name"]
 
-        # Optionally restrict actuals to only the test window
-        visible_series = series
-        if show_only_test and split_ds is not None:
-            visible_series = series[series["ds"] >= split_ds]
-
-        ax.plot(visible_series["ds"], visible_series["y"], linewidth=2, alpha=0.85, color="#222")
-
-        for res in results:
-            # Optionally skip non-chosen models from the benchmark forecasts
-            if hide_non_chosen_models and best_name is not None and res["name"] != best_name:
-                continue
-            forecast_df = res["forecast_df"]
-            label = res['name']
-            # Prepend the last actual point before the forecast start to avoid a visual gap
-            if not forecast_df.empty:
-                first_forecast_ds = forecast_df["ds"].iloc[0]
-                prev_actual = series[series["ds"] < first_forecast_ds].tail(1)
-                if not prev_actual.empty:
-                    pad_row = pd.DataFrame({
-                        "ds": prev_actual["ds"].values,
-                        "yhat": prev_actual["y"].values,
-                    })
-                    plot_df = pd.concat([pad_row, forecast_df], ignore_index=True)
-                else:
-                    plot_df = forecast_df
-            else:
-                plot_df = forecast_df
-
-            ax.plot(plot_df["ds"], plot_df["yhat"], linestyle="--", linewidth=1.8, label=label)
-
-        # Compute and plot predictions for the provided future rows
-        future_horizon = None
+        # Determine model visibility (per-row checkboxes) and compute future predictions only for selected
+        future_df = None
+        future_horizon = 0
+        selected_models = set()
         if best_name is not None:
-            name_to_est = {name: est for name, est in get_fast_estimators()}
-            ranked = sorted(results, key=lambda r: r.get("mape", float("inf")))
-            chosen_res = None
-            for res in ranked:
-                if res["name"] in name_to_est:
-                    chosen_res = res
-                    break
-            if chosen_res is not None:
-                chosen_name = chosen_res["name"]
-                # Reuse exact hyperparameters from benchmarking for retrain
-                try:
-                    best_params = chosen_res.get("estimator_params", {})
-                    if best_params:
+            # Initialize or reconcile visibility state
+            available_models = [r["name"] for r in results]
+            visibility = st.session_state.get("model_visibility")
+            if not isinstance(visibility, dict) or set(visibility.keys()) != set(available_models):
+                # Default: show only the best model
+                visibility = {name: (name == best_name) for name in available_models}
+                st.session_state["model_visibility"] = visibility
+
+            # Apply any pending edits from the editor state so toggles reflect immediately on rerun
+            try:
+                editor_state = st.session_state.get("model_table_editor", None)
+                if isinstance(editor_state, dict) and isinstance(editor_state.get("edited_rows"), dict):
+                    index_to_model = [r["name"] for r in results]
+                    for idx, changes in editor_state["edited_rows"].items():
                         try:
-                            name_to_est[chosen_name].set_params(**best_params)
+                            if 0 <= idx < len(index_to_model):
+                                model_name = index_to_model[idx]
+                                if model_name in visibility and "Show" in changes:
+                                    visibility[model_name] = bool(changes["Show"])
                         except Exception:
                             pass
+                    st.session_state["model_visibility"] = visibility
+            except Exception:
+                pass
+
+            # Create a compact benchmark table using st.dataframe
+            def _fmt(v):
+                try:
+                    import math
+                    if v is None:
+                        return ""
+                    if hasattr(v, 'item'):
+                        v = v.item()
+                    if isinstance(v, float):
+                        return f"{v:.3f}" if math.isfinite(v) else ""
+                    if isinstance(v, int):
+                        return f"{float(v):.3f}"
+                    return str(v)
                 except Exception:
-                    pass
+                    return str(v) if v is not None else ""
 
-                # Predict exactly the trailing missing targets using provided future rows (with features if present)
-                future_rows = series.iloc[last_observed_idx + 1 :][["ds"] + feature_cols]
-                future_df = train_on_known_and_forecast_missing(
-                    series,
-                    name_to_est[chosen_name],
-                    future_rows=future_rows,
-                )
+            # Prepare table data
+            table_data = []
+            for r in results:
+                m = r["name"]
+                default_checked = bool(visibility.get(m, m == best_name))
+                table_data.append({
+                    "Show": default_checked,
+                    "Model": m,
+                    f"{METRIC_NAME}": _fmt(r.get('rmse', None)),
+                    "Train (s)": _fmt(r.get('train_time_s', None)),
+                    "Predict (s)": _fmt(r.get('predict_time_s', None))
+                })
+            
+            # Create DataFrame
+            results_df = pd.DataFrame(table_data)
+            
+            # Display editable table
+            edited_df = st.data_editor(
+                results_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Show": st.column_config.CheckboxColumn(
+                        "Show",
+                        help="Select models to display in the plot",
+                        default=False,
+                    ),
+                    "Model": st.column_config.TextColumn(
+                        "Model",
+                        disabled=True,
+                    ),
+                    f"{METRIC_NAME}": st.column_config.TextColumn(
+                        f"{METRIC_NAME}",
+                        disabled=True,
+                    ),
+                    "Train (s)": st.column_config.TextColumn(
+                        "Train (s)",
+                        disabled=True,
+                    ),
+                    "Predict (s)": st.column_config.TextColumn(
+                        "Predict (s)",
+                        disabled=True,
+                    ),
+                },
+                key="model_table_editor"
+            )
+            
+            # Update visibility based on edited table
+            for _, row in edited_df.iterrows():
+                model_name = row["Model"]
+                if model_name in visibility:
+                    visibility[model_name] = bool(row["Show"])
 
-                # Prepend the last actual point to the future forecast to avoid gap
-                last_actual = series.sort_values("ds").tail(1)
-                if not last_actual.empty:
-                    pad_row = pd.DataFrame({
-                        "ds": last_actual["ds"].values,
-                        "yhat": last_actual["y"].values,
-                    })
-                    future_plot_df = pd.concat([pad_row, future_df], ignore_index=True)
-                else:
-                    future_plot_df = future_df
+            st.session_state["model_visibility"] = visibility
+            selected_models = {name for name, v in visibility.items() if v}
+            if not selected_models and best_name is not None:
+                selected_models = {best_name}
+                st.session_state[f"vis_{best_name}"] = True
 
-                ax.plot(
-                    future_plot_df["ds"], future_plot_df["yhat"],
-                    linestyle="-", linewidth=2.2, color="#d62728",
-                    label=f"Prediction"
-                )
-                future_horizon = len(future_df)
+            # Compute future forecasts once per dataset+future horizon and cache them
+            if not future_rows.empty:
+                try:
+                    fr_ds_key = ",".join(pd.to_datetime(future_rows["ds"]).dt.strftime('%Y-%m-%d').tolist())
+                except Exception:
+                    fr_ds_key = str(len(future_rows))
+                future_key = f"{_df_fingerprint(series)}|future={fr_ds_key}"
+                future_cache = st.session_state.get("future_cache", {})
 
-        if split_ds is not None and not show_only_test:
-            ax.axvline(split_ds, linestyle=":", linewidth=1)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Value")
-        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=10, frameon=False)
-        ax.grid(alpha=0.3)
-        fig.tight_layout(rect=(0, 0, 0.8, 1))
+                # Build a map of predictions per model if not cached
+                if future_key not in future_cache:
+                    name_to_est = {name: est for name, est in get_fast_estimators()}
+                    model_to_future = {}
+                    for res in results:
+                        model_name = res.get("name")
+                        est = name_to_est.get(model_name)
+                        if est is None:
+                            model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                            continue
+                        params = res.get("estimator_params", {})
+                        try:
+                            if params:
+                                est.set_params(**params)
+                        except Exception:
+                            pass
+                        try:
+                            res_future_df = train_on_known_and_forecast_missing(
+                                series, est, future_rows=future_rows
+                            )
+                        except Exception:
+                            res_future_df = pd.DataFrame({"ds": [], "yhat": []})
+                        model_to_future[model_name] = res_future_df
+                    future_cache[future_key] = model_to_future
+                    st.session_state["future_cache"] = future_cache
+
+                # Attach cached future forecasts to results
+                model_to_future = future_cache.get(future_key, {})
+                for res in results:
+                    model_name = res.get("name")
+                    res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
+
+                # Set horizon from any model with predictions
+                for res in results:
+                    if isinstance(res.get("future_df"), pd.DataFrame) and not res["future_df"].empty:
+                        future_horizon = len(res["future_df"]) or 0
+                        break
+
+        # Create and display plot using utility function
+        fig = create_forecast_plot(
+            series=series, results=results, future_df=None,
+            show_only_test=show_only_test, split_ds=split_ds,
+            hide_non_chosen_models=False, best_name=best_name,
+            visible_models=selected_models,
+        )
         st.pyplot(fig)
         # Controls rendered under the graph (they update session_state and trigger rerun)
         controls_container = st.container()
@@ -343,20 +366,6 @@ try:
                 value=st.session_state.get("show_full_history", False)
             )
             st.session_state["show_only_test"] = not st.session_state.get("show_full_history", False)
-
-            st.checkbox(
-                "Show all model forecasts",
-                key="show_all_model_forecasts",
-                value=st.session_state.get("show_all_model_forecasts", False)
-            )
-            st.session_state["hide_non_chosen_models"] = not st.session_state.get("show_all_model_forecasts", False)
-
-            st.checkbox(
-                "Show model comparison table",
-                key="show_model_comparison_table",
-                value=st.session_state.get("show_model_comparison_table", False)
-            )
-            st.session_state["hide_table"] = not st.session_state.get("show_model_comparison_table", False)
 
             st.checkbox(
                 "Show training data preview",
@@ -374,16 +383,7 @@ try:
             except Exception as e:
                 st.warning(f"Could not build features preview: {e}")
 
-        # Metrics table with timing
-        table_rows = [{
-            "Model": r["name"], METRIC_NAME: r.get("mape", None),
-            "Train (s)": r.get("train_time_s", None),
-            "Predict (s)": r.get("predict_time_s", None)
-        } for r in results]
-        table_df = pd.DataFrame(table_rows).sort_values(METRIC_NAME).reset_index(drop=True)
-        if not hide_table:
-            st.markdown("#### Benchmark results")
-            st.dataframe(table_df, use_container_width=True)
+        # Results table rendered above with per-model checkboxes
 
         # Render checklist in sidebar grouped by module
         try:

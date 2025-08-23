@@ -1,4 +1,4 @@
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -16,33 +16,40 @@ from sklearn.ensemble import (
     ExtraTreesRegressor,
     AdaBoostRegressor,
 )
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.svm import SVR
-from sklearn.base import clone
+
+from sklearn.base import BaseEstimator, clone
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error
 import time
 
-from features import build_features, build_features_internal
+from features import build_features_internal, build_features
 
+# Import configuration
 try:
-    # Optional import for SARIMA baseline
-    from statsmodels.tsa.statespace.sarimax import SARIMAX
-except Exception:  # keep optional
-    SARIMAX = None
+    from utils.config import DEFAULT_TEST_FRACTION, MIN_TRAINING_ROWS
+except ImportError:
+    # Fallback values
+    DEFAULT_TEST_FRACTION = 0.2
+    MIN_TRAINING_ROWS = 10
 
-# Optional Prophet baseline
-try:
-    from prophet import Prophet
-except Exception:
-    Prophet = None
+
 
 def _select_base_feature_columns(all_columns: List[str]) -> List[str]:
     """Pick model features we can also recreate when forecasting.
 
-    Includes: lags, moving averages, DOW dummies, trend, and Fourier terms.
+    Includes: lags, moving averages, DOW dummies, trend, Fourier terms, and exogenous features.
     """
-    prefixes = ("lag", "ma", "dow_", "fourier_")
-    base_cols = [c for c in all_columns if c.startswith(prefixes) or c == "trend"]
+    # Core time series features
+    core_prefixes = ("lag", "ma", "dow_", "fourier_")
+
+    # Exogenous features that can be recreated during forecasting
+    exog_prefixes = ("x_", "m_")  # x_ for numeric/categorical exog, m_ for multilabel exog
+
+    base_cols = [c for c in all_columns if
+                 c.startswith(core_prefixes) or
+                 c.startswith(exog_prefixes) or
+                 c == "trend"]
+
     return base_cols
 
 
@@ -114,6 +121,11 @@ def _build_row_for_date(
         if col.startswith("fourier_"):
             values.append(_compute_fourier_from_name(trend_val, col))
             continue
+        if col.startswith("x_") or col.startswith("m_"):
+            # Exogenous features - for forecasting without future data, use 0 as default
+            # In practice, these should come from external data sources
+            values.append(0.0)
+            continue
         # Unknown engineered column -> default 0
         values.append(0.0)
     return values
@@ -134,8 +146,8 @@ def ensure_daily_frequency(series_df: pd.DataFrame) -> None:
 # Removed Linear regression compatibility wrapper
 
 
-def forecast_with_estimator(series_df: pd.DataFrame, estimator, test_fraction: float = 0.2) -> Tuple[float, pd.DataFrame, pd.DataFrame, float, float]:
-    if series_df.shape[0] < 10:
+def forecast_with_estimator(series_df: pd.DataFrame, estimator, test_fraction: float = DEFAULT_TEST_FRACTION) -> Tuple[float, pd.DataFrame, pd.DataFrame, float, float]:
+    if series_df.shape[0] < MIN_TRAINING_ROWS:
         raise ValueError("Insufficient data (need at least 10 rows)")
     ensure_daily_frequency(series_df)
 
@@ -153,9 +165,17 @@ def forecast_with_estimator(series_df: pd.DataFrame, estimator, test_fraction: f
     feats_train = features_df[features_df["ds"] < test_start_ds].copy()
     feats_test = features_df[features_df["ds"] >= test_start_ds].copy()
 
-    # Drop rows with missing predictors/target
-    feats_train = feats_train.dropna(subset=base_cols + ["y"]) if not feats_train.empty else feats_train
-    feats_test = feats_test.dropna(subset=base_cols + ["y"]) if not feats_test.empty else feats_test
+    # Handle missing values more carefully for time series
+    # Only drop rows where target variable is missing, allow NaN in predictors for early periods
+    if not feats_train.empty:
+        feats_train = feats_train.dropna(subset=["y"]).copy()
+        # Fill remaining NaN values in predictors with forward fill, then 0 for any remaining
+        feats_train[base_cols] = feats_train[base_cols].fillna(method='ffill').fillna(0)
+
+    if not feats_test.empty:
+        feats_test = feats_test.dropna(subset=["y"]).copy()
+        # Fill remaining NaN values in predictors with forward fill, then 0 for any remaining
+        feats_test[base_cols] = feats_test[base_cols].fillna(method='ffill').fillna(0)
 
     # Guard against empty splits after dropna. If no test rows remain, return inf score to exclude this model.
     if feats_test.empty or ("y" not in feats_test.columns):
@@ -165,10 +185,11 @@ def forecast_with_estimator(series_df: pd.DataFrame, estimator, test_fraction: f
     if feats_train.empty or ("y" not in feats_train.columns):
         raise ValueError("No valid training rows after feature construction; cannot fit model")
 
-    X_train = feats_train[base_cols].to_numpy()
-    y_train = feats_train["y"].to_numpy()
-    X_test = feats_test[base_cols].to_numpy()
-    y_test = feats_test["y"].to_numpy()
+    # Convert to float arrays to handle mixed data types
+    X_train = feats_train[base_cols].to_numpy(dtype=float)
+    y_train = feats_train["y"].to_numpy(dtype=float)
+    X_test = feats_test[base_cols].to_numpy(dtype=float)
+    y_test = feats_test["y"].to_numpy(dtype=float)
 
     # Train and predict with timing
     model = clone(estimator)
@@ -196,34 +217,249 @@ def forecast_with_estimator(series_df: pd.DataFrame, estimator, test_fraction: f
     })
 
     if len(preds) > 0:
-        denom = np.where(np.abs(y_test) > 1e-8, np.abs(y_test), np.nan)
-        ape = np.abs((y_test - preds) / denom)
-        _val = np.nanmean(ape)
-        mape = float(_val) if np.isfinite(_val) else float("inf")
+        se = (y_test - preds) ** 2
+        mse = np.nanmean(se)
+        rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
     else:
-        mape = float("inf")
+        rmse = float("inf")
 
     # Convert feats_test back to original structure for the app (only ds/y)
     test_df = feats_test[["ds", "y"]].reset_index(drop=True)
 
-    return mape, forecast_df, test_df, train_time_s, predict_time_s
+    return rmse, forecast_df, test_df, train_time_s, predict_time_s
+
+
+class UnifiedTimeSeriesTrainer:
+    """
+    Unified architecture for consistent training and retraining of time series models.
+    Ensures the same feature engineering, data preprocessing, and model configuration
+    across all training scenarios.
+    """
+
+    def __init__(self):
+        self.feature_columns: List[str] = []
+        self.base_columns: List[str] = []
+        self.exog_schema: List[Dict] = []
+        self.trained_models: Dict[str, BaseEstimator] = {}
+        self.training_history: Dict[str, Dict] = {}
+
+    def _prepare_features(self, series_df: pd.DataFrame, return_info: bool = False) -> Tuple[pd.DataFrame, List[str], Dict]:
+        """
+        Unified feature engineering - used by all training functions.
+        This ensures consistency between training, retraining, and forecasting.
+        """
+        # Build features using the same internal function
+        features_df, feature_cols_all, info = build_features_internal(series_df, return_info=True)
+
+        # Store feature information for consistency
+        if not self.feature_columns:
+            self.feature_columns = feature_cols_all
+            self.base_columns = _select_base_feature_columns(feature_cols_all)
+            self.exog_schema = info.get("exog_schema", [])
+
+        # Expand exogenous columns
+        exog_cols_expanded = []
+        for sch in self.exog_schema:
+            exog_cols_expanded.extend(list(sch.get("columns", [])))
+
+        if return_info:
+            return features_df, feature_cols_all, info
+        return features_df, feature_cols_all
+
+    def _get_exog_vector_for_date(self, target_ds: pd.Timestamp, future_map: Dict) -> List[float]:
+        """Consistent exogenous feature vector generation"""
+        values: List[float] = []
+        raw = future_map.get(pd.Timestamp(target_ds), {})
+
+        for sch in self.exog_schema:
+            typ = sch.get("type")
+            cols = list(sch.get("columns", []))
+            if typ == "numeric":
+                original_name = sch.get("original_name")
+                val = pd.to_numeric(raw.get(original_name, pd.NA), errors="coerce")
+                if pd.isna(val):
+                    values.append(np.nan)
+                else:
+                    values.append(float(val))
+            elif typ == "categorical":
+                original_name = sch.get("original_name")
+                raw_val = raw.get(original_name, pd.NA)
+                raw_str = str(raw_val) if not pd.isna(raw_val) else "nan"
+                hit_col = None
+                for c in cols:
+                    suffix = c.split(f"x_{sch.get('sanitized_base')}_", 1)[-1]
+                    if raw_str == "nan" and suffix == "nan":
+                        hit_col = c
+                        break
+                    if suffix == str(raw_val):
+                        hit_col = c
+                        break
+                for c in cols:
+                    values.append(1.0 if c == hit_col else 0.0)
+            elif typ == "multilabel":
+                original_name = sch.get("original_name")
+                raw_val = raw.get(original_name, None)
+                labels = []
+                if isinstance(raw_val, str):
+                    for delim in [",", ";", "|"]:
+                        if delim in raw_val:
+                            labels = [p.strip() for p in raw_val.split(delim) if p.strip()]
+                            break
+                    if not labels and raw_val.strip():
+                        labels = [raw_val.strip()]
+                label_set = set(labels)
+                for c in cols:
+                    suffix = c.split(f"m_{sch.get('sanitized_base')}_", 1)[-1]
+                    values.append(1.0 if suffix in label_set else 0.0)
+            else:
+                for _ in cols:
+                    values.append(0.0)
+        return values
+
+    def benchmark_models(self, series_df: pd.DataFrame, test_fraction: float = DEFAULT_TEST_FRACTION) -> List[Dict[str, Any]]:
+        """
+        Unified benchmarking that uses the same feature engineering as retraining.
+        This ensures consistency between model selection and retraining.
+        """
+        if series_df.shape[0] < MIN_TRAINING_ROWS:
+            raise ValueError("Insufficient data (need at least 10 rows)")
+        ensure_daily_frequency(series_df)
+
+        # Use unified feature preparation
+        sorted_df = series_df.sort_values("ds").reset_index(drop=True)
+        features_df, feature_cols_all = self._prepare_features(sorted_df)
+
+        # Split train/test on time
+        n = len(sorted_df)
+        test_size = max(1, int(n * test_fraction))
+        test_start_ds = sorted_df.iloc[-test_size]["ds"]
+
+        # Align to train/test windows
+        feats_train = features_df[features_df["ds"] < test_start_ds].copy()
+        feats_test = features_df[features_df["ds"] >= test_start_ds].copy()
+
+        # Drop rows with missing predictors/target
+        feats_train = feats_train.dropna(subset=self.base_columns + ["y"])
+        feats_test = feats_test.dropna(subset=self.base_columns + ["y"])
+
+        if feats_test.empty:
+            return [{"name": "NoModels", "rmse": float("inf"), "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame()}]
+
+        # Prepare data
+        X_train = feats_train[self.base_columns].to_numpy(dtype=float)
+        y_train = feats_train["y"].to_numpy(dtype=float)
+        X_test = feats_test[self.base_columns].to_numpy(dtype=float)
+        y_test = feats_test["y"].to_numpy(dtype=float)
+
+        results = []
+
+        for name, est in get_fast_estimators():
+            try:
+                model = clone(est)
+
+                # Handle KNN special case
+                if hasattr(model, 'n_neighbors'):
+                    if isinstance(model, KNeighborsRegressor):
+                        desired_k = getattr(model, "n_neighbors", 5)
+                        max_allowed_k = max(1, min(desired_k, X_train.shape[0]))
+                        if max_allowed_k != desired_k:
+                            model.set_params(n_neighbors=max_allowed_k)
+
+                # Time training
+                t0 = time.time()
+                model.fit(X_train, y_train)
+                train_time_s = float(time.time() - t0)
+
+                # Time prediction
+                t1 = time.time()
+                preds = model.predict(X_test)
+                predict_time_s = float(time.time() - t1)
+
+                if len(preds) > 0:
+                    se = (y_test - preds) ** 2
+                    mse = np.nanmean(se)
+                    rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
+                else:
+                    rmse = float("inf")
+
+                forecast_df = pd.DataFrame({
+                    "ds": feats_test["ds"].to_numpy(),
+                    "yhat": preds,
+                })
+
+                test_df = feats_test[["ds", "y"]].reset_index(drop=True)
+
+                results.append({
+                    "name": name,
+                    "rmse": rmse,
+                    "forecast_df": forecast_df,
+                    "test_df": test_df,
+                    "train_time_s": train_time_s,
+                    "predict_time_s": predict_time_s,
+                    "estimator_params": est.get_params(deep=True),
+                })
+
+            except Exception as e:
+                results.append({
+                    "name": name,
+                    "rmse": float("inf"),
+                    "forecast_df": pd.DataFrame(),
+                    "test_df": pd.DataFrame(),
+                    "train_time_s": None,
+                    "predict_time_s": None,
+                    "error": str(e),
+                    "estimator_params": est.get_params(deep=True),
+                })
+
+        # Sort by RMSE
+        results.sort(key=lambda r: r.get("rmse", float("inf")))
+        return results
+
+    def cross_validate_model(self, series_df: pd.DataFrame, estimator: BaseEstimator,
+                           n_splits: int = 5) -> Dict[str, float]:
+        """
+        Cross-validation using time series splits to assess model stability.
+        """
+        ensure_daily_frequency(series_df)
+        features_df, _ = self._prepare_features(series_df)
+
+        train_feats = features_df.dropna(subset=self.base_columns + ["y"]).copy()
+        X = train_feats[self.base_columns].to_numpy(dtype=float)
+        y = train_feats["y"].to_numpy(dtype=float)
+
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        rmse_scores = []
+
+        for train_index, test_index in tscv.split(X):
+            X_train, X_test = X[train_index], X[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+
+            model = clone(estimator)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+            rmse = mean_squared_error(y_test, y_pred, squared=False)
+            rmse_scores.append(rmse)
+
+        return {
+            "mean_rmse": np.mean(rmse_scores),
+            "std_rmse": np.std(rmse_scores),
+            "cv_scores": rmse_scores
+        }
 
 
 def get_fast_estimators() -> List[Tuple[str, object]]:
     return [
         ("Ridge", Ridge(alpha=1.0)),
-        ("Lasso", Lasso(alpha=0.001, max_iter=10000)),
-        ("ElasticNet", ElasticNet(alpha=0.001, l1_ratio=0.5, max_iter=10000)),
+        ("Lasso", Lasso(alpha=0.01, max_iter=20000, tol=1e-4)),
+        ("ElasticNet", ElasticNet(alpha=0.01, l1_ratio=0.5, max_iter=20000, tol=1e-4)),
         ("BayesianRidge", BayesianRidge()),
         ("KNN", KNeighborsRegressor(n_neighbors=3)),
-        ("DecisionTree", DecisionTreeRegressor(random_state=42, max_depth=8, min_samples_leaf=3)),
         ("ExtraTrees", ExtraTreesRegressor(random_state=42, n_estimators=200, n_jobs=-1)),
         ("AdaBoost", AdaBoostRegressor(random_state=42, n_estimators=200, learning_rate=0.05)),
         ("GB", GradientBoostingRegressor(random_state=42, n_estimators=200, max_depth=3)),
         ("RF", RandomForestRegressor(random_state=42, n_estimators=300, n_jobs=-1)),
-        ("SVR", SVR(C=1.0, epsilon=0.1, kernel="rbf", gamma="scale")),
-        ("Huber", HuberRegressor()),
-        ("MLP", MLPRegressor(hidden_layer_sizes=(64, 32), activation="relu", solver="adam", max_iter=1500, random_state=42)),
+        ("Huber", HuberRegressor(epsilon=1.35, max_iter=200, tol=1e-4)),
     ]
 
 
@@ -241,93 +477,22 @@ def _seasonal_naive_forecast(sorted_df: pd.DataFrame, period: int, test_start_ds
         preds.append(yhat)
     preds = np.array(preds, dtype=float)
     forecast_df = pd.DataFrame({"ds": test_df["ds"].to_numpy(), "yhat": preds})
-    denom = np.where(np.abs(y_test) > 1e-8, np.abs(y_test), np.nan)
-    ape = np.abs((y_test - preds) / denom)
-    mape = float(np.nanmean(ape))
-    return mape, forecast_df, test_df, 0.0, 0.0
+    se = (y_test - preds) ** 2
+    mse = np.nanmean(se)
+    rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
+    return rmse, forecast_df, test_df, 0.0, 0.0
 
 
  
 
 
-def _sarima_forecast(sorted_df: pd.DataFrame, test_start_ds: pd.Timestamp) -> Tuple[float, pd.DataFrame, pd.DataFrame, float, float]:
-    if SARIMAX is None:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    train = sorted_df[sorted_df["ds"] < test_start_ds].copy()
-    test = sorted_df[sorted_df["ds"] >= test_start_ds].copy()
-    if train.empty or test.empty:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    # Coerce and clean
-    train["y"] = pd.to_numeric(train["y"], errors="coerce")
-    train = train.dropna(subset=["y"])  # SARIMAX cannot handle NaNs in endog
-    if train.empty:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    y_train = train["y"].astype(float).to_numpy()
-    # Dynamic seasonal period selection for robustness on short histories
-    len_train = len(train)
-    seasonal_period = 365 if len_train >= 730 else (7 if len_train >= 14 else None)
-    t0 = time.time()
-    if seasonal_period is None:
-        model = SARIMAX(
-            y_train,
-            order=(8, 1, 0),
-            seasonal_order=(0, 0, 0, 0),
-            enforce_stationarity=False,
-            enforce_invertibility=False,
-        )
-    else:
-        model = SARIMAX(
-            y_train,
-            order=(8, 1, 0),
-            seasonal_order=(1, 1, 0, seasonal_period),
-            enforce_stationarity=False,
-            enforce_invertibility=False,
-        )
-    fit = model.fit(disp=False)
-    train_time_s = float(time.time() - t0)
-    t1 = time.time()
-    preds = fit.forecast(steps=len(test))
-    predict_time_s = float(time.time() - t1)
-    preds = preds.astype(float)
-    forecast_df = pd.DataFrame({"ds": test["ds"].to_numpy(), "yhat": preds})
-    denom = np.where(np.abs(test["y"].to_numpy()) > 1e-8, np.abs(test["y"].to_numpy()), np.nan)
-    ape = np.abs((test["y"].to_numpy() - preds) / denom)
-    mape = float(np.nanmean(ape))
-    return mape, forecast_df, test.reset_index(drop=True), train_time_s, predict_time_s
 
 
-# Prophet baseline (optional)
-def _prophet_forecast(sorted_df: pd.DataFrame, test_start_ds: pd.Timestamp) -> Tuple[float, pd.DataFrame, pd.DataFrame, float, float]:
-    if Prophet is None:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    train = sorted_df[sorted_df["ds"] < test_start_ds].copy()
-    test = sorted_df[sorted_df["ds"] >= test_start_ds].copy()
-    if train.empty or test.empty:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    train = train[["ds", "y"]].copy()
-    # Coerce types for Prophet robustness
-    train["ds"] = pd.to_datetime(train["ds"], errors="coerce")
-    train["y"] = pd.to_numeric(train["y"], errors="coerce")
-    train = train.dropna()
-    if train.empty:
-        return float("inf"), pd.DataFrame({"ds": [], "yhat": []}), pd.DataFrame({"ds": [], "y": []}), 0.0, 0.0
-    t0 = time.time()
-    model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-    model.fit(train.rename(columns={"ds": "ds", "y": "y"}))
-    train_time_s = float(time.time() - t0)
-    t1 = time.time()
-    future = pd.DataFrame({"ds": pd.to_datetime(test["ds"].to_numpy())})
-    forecast = model.predict(future)
-    predict_time_s = float(time.time() - t1)
-    preds = forecast["yhat"].astype(float).to_numpy()
-    forecast_df = pd.DataFrame({"ds": test["ds"].to_numpy(), "yhat": preds})
-    denom = np.where(np.abs(test["y"].to_numpy()) > 1e-8, np.abs(test["y"].to_numpy()), np.nan)
-    ape = np.abs((test["y"].to_numpy() - preds) / denom)
-    mape = float(np.nanmean(ape))
-    return mape, forecast_df, test.reset_index(drop=True), train_time_s, predict_time_s
 
 
-def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> List[Dict[str, object]]:
+
+
+def benchmark_models(series_df: pd.DataFrame, test_fraction: float = DEFAULT_TEST_FRACTION) -> List[Dict[str, object]]:
     results: List[Dict[str, object]] = []
     sorted_df = series_df.sort_values("ds").reset_index(drop=True)
     n = len(sorted_df)
@@ -337,10 +502,10 @@ def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Lis
     # ML regressors
     for name, est in get_fast_estimators():
         try:
-            mape, forecast_df, test_df, train_time_s, predict_time_s = forecast_with_estimator(sorted_df, est, test_fraction)
+            rmse, forecast_df, test_df, train_time_s, predict_time_s = forecast_with_estimator(sorted_df, est, test_fraction)
             results.append({
                 "name": name,
-                "mape": mape,
+                "rmse": rmse,
                 "forecast_df": forecast_df,
                 "test_df": test_df,
                 "train_time_s": train_time_s,
@@ -352,7 +517,7 @@ def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Lis
             # Record the failure but keep the app running; this model will be ignored later
             results.append({
                 "name": name,
-                "mape": float("inf"),
+                "rmse": float("inf"),
                 "forecast_df": pd.DataFrame({"ds": [], "yhat": []}),
                 "test_df": pd.DataFrame({"ds": [], "y": []}),
                 "train_time_s": None,
@@ -364,10 +529,10 @@ def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Lis
     # Seasonal naive baseline (365) if enough history
     try:
         if n >= (365 + test_size + 1):
-            mape, forecast_df, test_df, tr_s, pr_s = _seasonal_naive_forecast(sorted_df, period=365, test_start_ds=test_start_ds)
+            rmse, forecast_df, test_df, tr_s, pr_s = _seasonal_naive_forecast(sorted_df, period=365, test_start_ds=test_start_ds)
             results.append({
                 "name": "SeasonalNaive(365)",
-                "mape": mape,
+                "rmse": rmse,
                 "forecast_df": forecast_df,
                 "test_df": test_df,
                 "train_time_s": tr_s,
@@ -377,7 +542,7 @@ def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Lis
     except Exception as e:
         results.append({
             "name": "SeasonalNaive(365)",
-            "mape": float("inf"),
+            "rmse": float("inf"),
             "forecast_df": pd.DataFrame({"ds": [], "yhat": []}),
             "test_df": pd.DataFrame({"ds": [], "y": []}),
             "train_time_s": None,
@@ -386,57 +551,13 @@ def benchmark_models(series_df: pd.DataFrame, test_fraction: float = 0.2) -> Lis
             "estimator_params": {},
         })
 
-    # SARIMA baseline (may be slow)
-    try:
-        mape, forecast_df, test_df, tr_s, pr_s = _sarima_forecast(sorted_df, test_start_ds)
-        results.append({
-            "name": "SARIMA(8,1,0)x(1,1,0,365)",
-            "mape": mape,
-            "forecast_df": forecast_df,
-            "test_df": test_df,
-            "train_time_s": tr_s,
-            "predict_time_s": pr_s,
-            "estimator_params": {},
-        })
-    except Exception as e:
-        results.append({
-            "name": "SARIMA(8,1,0)x(1,1,0,365)",
-            "mape": float("inf"),
-            "forecast_df": pd.DataFrame({"ds": [], "yhat": []}),
-            "test_df": pd.DataFrame({"ds": [], "y": []}),
-            "train_time_s": None,
-            "predict_time_s": None,
-            "error": str(e),
-            "estimator_params": {},
-        })
 
-    # Prophet baseline (optional)
-    try:
-        mape, forecast_df, test_df, tr_s, pr_s = _prophet_forecast(sorted_df, test_start_ds)
-        results.append({
-            "name": "Prophet(Y+W)",
-            "mape": mape,
-            "forecast_df": forecast_df,
-            "test_df": test_df,
-            "train_time_s": tr_s,
-            "predict_time_s": pr_s,
-            "estimator_params": {},
-        })
-    except Exception as e:
-        results.append({
-            "name": "Prophet(Y+W)",
-            "mape": float("inf"),
-            "forecast_df": pd.DataFrame({"ds": [], "yhat": []}),
-            "test_df": pd.DataFrame({"ds": [], "y": []}),
-            "train_time_s": None,
-            "predict_time_s": None,
-            "error": str(e),
-            "estimator_params": {},
-        })
+
+
 
     # Keep all models (including unavailable/failed baselines) so they appear in the UI table
-    # Sort by MAPE with unavailable ones (inf) at the end
-    results.sort(key=lambda r: r.get("mape", float("inf")))
+    # Sort by RMSE with unavailable ones (inf) at the end
+    results.sort(key=lambda r: r.get("rmse", float("inf")))
     return results
 
 
@@ -452,7 +573,11 @@ def train_full_and_forecast_future(series_df: pd.DataFrame, estimator, horizon_f
     sorted_df = series_df.sort_values("ds").reset_index(drop=True)
     features_df, feature_cols_all = build_features(sorted_df)
     base_cols = _select_base_feature_columns(feature_cols_all)
-    train_feats = features_df.dropna(subset=base_cols + ["y"]).copy()
+
+    # Handle missing values more carefully for time series
+    train_feats = features_df.dropna(subset=["y"]).copy()
+    # Fill remaining NaN values in predictors with forward fill, then 0 for any remaining
+    train_feats[base_cols] = train_feats[base_cols].fillna(method='ffill').fillna(0)
 
     if train_feats.empty:
         raise ValueError("No valid training rows after feature construction; cannot fit model for future forecast")
@@ -467,7 +592,7 @@ def train_full_and_forecast_future(series_df: pd.DataFrame, estimator, horizon_f
                 model.set_params(n_neighbors=max_allowed_k)
     except Exception:
         pass
-    model.fit(train_feats[base_cols].to_numpy(), train_feats["y"].to_numpy())
+    model.fit(train_feats[base_cols].to_numpy(dtype=float), train_feats["y"].to_numpy(dtype=float))
 
     # Seed history strictly with KNOWN y values to avoid NaNs in lag features
     hist = (
@@ -514,17 +639,40 @@ def train_on_known_and_forecast_missing(full_df: pd.DataFrame, estimator, future
     sorted_df = full_df.sort_values("ds").reset_index(drop=True)
     features_df, feature_cols_all, info = build_features_internal(sorted_df, return_info=True)
     base_cols = _select_base_feature_columns(feature_cols_all)
+    # Exclude exogenous columns from base when we explicitly append them via schema
+    base_cols_no_exog = [c for c in base_cols if not (c.startswith("x_") or c.startswith("m_"))]
     # Include exogenous columns if present in training features
     exog_schema = info.get("exog_schema", [])
     exog_cols_expanded = []
     for sch in exog_schema:
         exog_cols_expanded.extend(list(sch.get("columns", [])))
-    train_cols = base_cols + exog_cols_expanded
+    # Final training columns: non-exogenous time-series features + expanded exogenous features
+    train_cols = base_cols_no_exog + exog_cols_expanded
 
-    train_feats = features_df.dropna(subset=train_cols + ["y"]).copy() if train_cols else features_df.dropna(subset=base_cols + ["y"]).copy()
+    # Align retraining with benchmarking: require complete predictor rows
+    # This avoids the distribution shift caused by imputing early lag NaNs.
+    if train_cols:
+        drop_subset = train_cols + ["y"]
+    else:
+        drop_subset = base_cols_no_exog + ["y"]
+    train_feats = features_df.dropna(subset=drop_subset).copy()
 
     model = clone(estimator)
-    model.fit(train_feats[train_cols].to_numpy() if train_cols else train_feats[base_cols].to_numpy(), train_feats["y"].to_numpy())
+    # Adapt K for KNN if the training set is very small to avoid ValueError
+    try:
+        if isinstance(model, KNeighborsRegressor):
+            desired_k = getattr(model, "n_neighbors", 5)
+            max_allowed_k = max(1, int(min(desired_k, train_feats.shape[0])))
+            if max_allowed_k != desired_k:
+                model.set_params(n_neighbors=max_allowed_k)
+    except Exception:
+        pass
+    X_train_mat = (
+        train_feats[train_cols].to_numpy(dtype=float)
+        if train_cols else train_feats[base_cols_no_exog].to_numpy(dtype=float)
+    )
+    y_train_vec = train_feats["y"].to_numpy(dtype=float)
+    model.fit(X_train_mat, y_train_vec)
 
     # Prepare history strictly from KNOWN target rows to compute lags robustly
     hist = (
@@ -561,11 +709,8 @@ def train_on_known_and_forecast_missing(full_df: pd.DataFrame, estimator, future
                 original_name = sch.get("original_name")
                 new_col = cols[0] if cols else None
                 val = pd.to_numeric(raw.get(original_name, pd.NA), errors="coerce")
-                if pd.isna(val):
-                    # Keep NaN; model will error if NaN was not seen during train; our checklist should prevent this
-                    values.append(np.nan)
-                else:
-                    values.append(float(val))
+                # Avoid introducing NaNs at prediction time; fall back to 0.0
+                values.append(float(val) if not pd.isna(val) else 0.0)
             elif typ == "categorical":
                 # One-hot across known training columns
                 original_name = sch.get("original_name")
@@ -615,7 +760,7 @@ def train_on_known_and_forecast_missing(full_df: pd.DataFrame, estimator, future
         # If there is a gap larger than 1 day, we still simulate day-by-day to roll lags forward
         while (pd.Timestamp(current_ds) - pd.Timestamp(last_processed_ds)).days > 1:
             intermediate_ds = last_processed_ds + pd.Timedelta(days=1)
-            base_vec = _build_row_for_date(base_cols, hist, intermediate_ds, start_ds)
+            base_vec = _build_row_for_date(base_cols_no_exog, hist, intermediate_ds, start_ds)
             exog_vec = _exog_vector_for_date(intermediate_ds) if exog_cols_expanded else []
             X_mid = np.array([base_vec + exog_vec]) if exog_cols_expanded else np.array([base_vec])
             yhat_mid = float(model.predict(X_mid)[0])
@@ -623,7 +768,7 @@ def train_on_known_and_forecast_missing(full_df: pd.DataFrame, estimator, future
             last_processed_ds = intermediate_ds
 
         # Now predict for the requested date
-        base_vec = _build_row_for_date(base_cols, hist, current_ds, start_ds)
+        base_vec = _build_row_for_date(base_cols_no_exog, hist, current_ds, start_ds)
         exog_vec = _exog_vector_for_date(current_ds) if exog_cols_expanded else []
         X_row = np.array([base_vec + exog_vec]) if exog_cols_expanded else np.array([base_vec])
         yhat = float(model.predict(X_row)[0])
