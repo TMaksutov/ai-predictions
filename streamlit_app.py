@@ -422,6 +422,9 @@ try:
 
         # Results table rendered below with per-model checkboxes
 
+        # Add header for results
+        st.markdown("### Results")
+
         # Add download button for predictions
         if selected_models and future_horizon > 0:
             # Prepare data for download

@@ -633,11 +633,7 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
                 future_features_ok = bool(row_complete.all())
             except Exception:
                 future_features_ok = False
-            add(
-                "Features & prep",
-                f"Future features filled rows: {num_future_rows_filled}/{num_future_rows}",
-                "ok" if future_features_ok else "error",
-            )
+
     else:
         add("Features & prep", "Future rows provided: 0 (required)", "error")
 
