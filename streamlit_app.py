@@ -422,44 +422,43 @@ try:
 
         # Results table rendered below with per-model checkboxes
 
-        # Add header for results
-        st.markdown("### Results")
-
-        # Add download button for predictions
-        if selected_models and future_horizon > 0:
-            # Prepare data for download
-            download_df = raw_df.copy()
-            # Get predictions from the best visible model
-            best_visible_model = None
-            best_visible_rmse = float('inf')
-            for r in results:
-                if r['name'] in selected_models and r.get('rmse', float('inf')) < best_visible_rmse:
-                    best_visible_model = r
-                    best_visible_rmse = r.get('rmse', float('inf'))
-            
-            if best_visible_model and not best_visible_model['future_df'].empty:
-                future_preds = best_visible_model['future_df']
-                # Add predictions to the original dataframe
-                download_df.loc[download_df['y'].isna(), 'y'] = future_preds['yhat'].values
-                
-                # Create download button
-                csv_buffer = io.StringIO()
-                download_df.to_csv(csv_buffer, index=False)
-                csv_str = csv_buffer.getvalue()
-                
-                st.sidebar.download_button(
-                    label="Download Predictions as CSV",
-                    data=csv_str,
-                    file_name="predictions.csv",
-                    mime="text/csv",
-                )
-
         # Render checklist in sidebar grouped by module
         try:
             file_info_local = locals().get('file_info', {})
             raw_df_local = locals().get('raw_df', pd.DataFrame())
             grouped = build_checklist_grouped(raw_df_local, file_info_local, series, load_meta, results, future_horizon or 0)
             _render_checklist(grouped)
+        except Exception:
+            pass
+
+        # Offer CSV download with predicted target (after checklist, before settings)
+        try:
+            best_future_df = None
+            if isinstance(results, list) and len(results) > 0:
+                best_res = sorted(results, key=lambda r: r.get("rmse", float("inf")))[0]
+                best_future_df = best_res.get("future_df")
+            if isinstance(best_future_df, pd.DataFrame) and not best_future_df.empty:
+                time_col = load_meta.get("original_time_col", raw_df.columns[0] if not raw_df.empty else "date")
+                target_col = load_meta.get("original_target_col", raw_df.columns[-1] if not raw_df.empty else "target")
+                pred_col = f"predicted_{str(target_col)}"
+                # Map ds -> yhat for future rows
+                try:
+                    pred_map = dict(zip(pd.to_datetime(best_future_df["ds"], errors="coerce").dt.normalize(), best_future_df["yhat"]))
+                except Exception:
+                    pred_map = {}
+                download_df = raw_df.copy()
+                try:
+                    ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                    download_df[pred_col] = ds_norm.map(pred_map)
+                except Exception:
+                    download_df[pred_col] = None
+                out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
+                st.sidebar.download_button(
+                    label="Download CSV with predictions",
+                    data=download_df.to_csv(index=False).encode("utf-8"),
+                    file_name=out_name,
+                    mime="text/csv",
+                )
         except Exception:
             pass
 
