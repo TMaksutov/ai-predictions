@@ -673,7 +673,6 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     ordered = [
         ("Open & analyze", groups["Open & analyze"]),
         ("Features & prep", groups["Features & prep"]),
-        ("Seasonality", groups["Seasonality"]),
     ]
     return ordered
 

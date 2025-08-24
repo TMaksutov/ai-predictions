@@ -453,6 +453,7 @@ try:
                 except Exception:
                     download_df[pred_col] = None
                 out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
+                st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
                 st.sidebar.download_button(
                     label="Download CSV with predictions",
                     data=download_df.to_csv(index=False).encode("utf-8"),
