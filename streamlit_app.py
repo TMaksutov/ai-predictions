@@ -100,7 +100,6 @@ def _pick_top_unique_models(results: list, max_models: int = 3) -> list:
  # -----------------------------
 # Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
-    "Upload a CSV (date column first, target last)",
     type=["csv"],
     accept_multiple_files=False,
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
