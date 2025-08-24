@@ -16,6 +16,8 @@ from sklearn.ensemble import (
     ExtraTreesRegressor,
     AdaBoostRegressor,
 )
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from sklearn.base import BaseEstimator, clone
 import time
@@ -66,10 +68,10 @@ def _seed_default_models_if_empty() -> None:
     # Linear models
     register_model("Ridge (alpha=0.5)", lambda: Ridge(alpha=0.5))
     register_model("Ridge (alpha=2.0)", lambda: Ridge(alpha=2.0))
-    register_model("Lasso (alpha=0.01)", lambda: Lasso(alpha=0.01, max_iter=10000, tol=1e-4))
-    register_model("Lasso (alpha=0.1)", lambda: Lasso(alpha=0.1, max_iter=30000, tol=1e-4))
-    register_model("ElasticNet (alpha=0.01)", lambda: ElasticNet(alpha=0.01, l1_ratio=0.3, max_iter=10000, tol=1e-4))
-    register_model("ElasticNet (alpha=0.01)", lambda: ElasticNet(alpha=0.01, l1_ratio=0.7, max_iter=30000, tol=1e-4))
+    register_model("Lasso (alpha=0.01)", lambda: Pipeline([("scaler", StandardScaler()), ("model", Lasso(alpha=0.01, max_iter=50000, tol=1e-4))]))
+    register_model("Lasso (alpha=0.1)", lambda: Pipeline([("scaler", StandardScaler()), ("model", Lasso(alpha=0.1, max_iter=60000, tol=1e-4))]))
+    register_model("ElasticNet (alpha=0.01, l1=0.3)", lambda: Pipeline([("scaler", StandardScaler()), ("model", ElasticNet(alpha=0.01, l1_ratio=0.3, max_iter=50000, tol=1e-4))]))
+    register_model("ElasticNet (alpha=0.01, l1=0.7)", lambda: Pipeline([("scaler", StandardScaler()), ("model", ElasticNet(alpha=0.01, l1_ratio=0.7, max_iter=60000, tol=1e-4))]))
     register_model("BayesianRidge (alpha_1=1e-6)", lambda: BayesianRidge(alpha_1=1e-6, alpha_2=1e-6))
     register_model("BayesianRidge (alpha_1=1e-4)", lambda: BayesianRidge(alpha_1=1e-4, alpha_2=1e-4))
     # Neighbors
@@ -85,8 +87,20 @@ def _seed_default_models_if_empty() -> None:
     register_model("RF (n_estimators=200)", lambda: RandomForestRegressor(random_state=42, n_estimators=200, max_depth=8))
     register_model("RF (n_estimators=300)", lambda: RandomForestRegressor(random_state=42, n_estimators=300, max_depth=10))
     # Robust linear
-    register_model("Huber (epsilon=1.35)", lambda: HuberRegressor(epsilon=1.35, max_iter=200, tol=1e-4))
-    register_model("Huber (epsilon=1.75)", lambda: HuberRegressor(epsilon=1.75, max_iter=400, tol=1e-4))
+    register_model(
+        "Huber (epsilon=1.35)",
+        lambda: Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", HuberRegressor(epsilon=1.35, max_iter=1000, tol=1e-4)),
+        ]),
+    )
+    register_model(
+        "Huber (epsilon=1.75)",
+        lambda: Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", HuberRegressor(epsilon=1.75, max_iter=1500, tol=1e-4)),
+        ]),
+    )
 
 # Seed defaults on import so registry always has baseline models
 _seed_default_models_if_empty()

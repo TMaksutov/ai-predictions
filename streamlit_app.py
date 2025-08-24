@@ -106,6 +106,12 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
 )
 
+# Gate heavy computations behind an explicit action to avoid startup timeouts
+if "run_triggered" not in st.session_state:
+    st.session_state["run_triggered"] = False
+if st.sidebar.button("Run benchmark and forecast", type="primary"):
+    st.session_state["run_triggered"] = True
+
 # Load data using simplified logic
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
@@ -182,6 +188,12 @@ def _has_blocking_issues(grouped_items):
 
 if _has_blocking_issues(pre_grouped):
     _render_checklist(pre_grouped)
+    st.stop()
+
+# If user hasn't triggered the run yet, render checklist and wait
+if not st.session_state.get("run_triggered", False):
+    _render_checklist(pre_grouped)
+    st.info("Ready. Click 'Run benchmark and forecast' to compute models and forecasts.")
     st.stop()
 
 try:

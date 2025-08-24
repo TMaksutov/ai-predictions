@@ -109,6 +109,37 @@ def _normalize_trailing_separators(raw_bytes: bytes, sep_hint: Optional[str]) ->
     except Exception:
         return raw_bytes, sep, {"lines_fixed": 0}
 
+def _detect_datetime_format(sample: List[str], max_samples: int = 200) -> Optional[str]:
+    """
+    Try a small set of common date formats and return the first format that parses
+    all non-empty samples without NaT. This avoids pandas element-wise parsing warnings.
+    """
+    try:
+        formats = [
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%m/%d/%Y",
+            "%Y/%m/%d",
+            "%d-%m-%Y",
+            "%m-%d-%Y",
+            "%Y.%m.%d",
+        ]
+        # Take a subset of non-empty strings
+        vals: List[str] = [str(v).strip() for v in sample if str(v).strip()]
+        if not vals:
+            return None
+        vals = vals[:max_samples]
+        for fmt in formats:
+            try:
+                parsed = pd.to_datetime(vals, format=fmt, errors="coerce")
+                if parsed.notna().all():
+                    return fmt
+            except Exception:
+                continue
+        return None
+    except Exception:
+        return None
+
 def read_table_any(file_obj_or_path):
     """
     Read an uploaded file strictly as CSV with robust delimiter and header detection.
@@ -243,7 +274,12 @@ def read_table_any(file_obj_or_path):
     header_detected = False
     try:
         first_col = raw_df.iloc[:, 0]
-        parsed_all = pd.to_datetime(first_col, errors="coerce")
+        fmt = _detect_datetime_format(first_col.astype(str).tolist())
+        if fmt:
+            parsed_all = pd.to_datetime(first_col, errors="coerce", format=fmt)
+        else:
+            # Use mixed parsing (pandas >=2.0) to avoid element-wise warnings
+            parsed_all = pd.to_datetime(first_col, errors="coerce", format="mixed")
         if len(parsed_all) >= 2:
             first_is_not_date = pd.isna(parsed_all.iloc[0])
             after_ratio = parsed_all.iloc[1:].notna().mean() if len(parsed_all) > 1 else 0.0
@@ -317,7 +353,10 @@ def read_table_any(file_obj_or_path):
 def detect_roles(df: pd.DataFrame):
     ts_candidates = []
     for col in df.columns:
-        coerced = pd.to_datetime(df[col], errors="coerce")
+        try:
+            coerced = pd.to_datetime(df[col], errors="coerce", format="mixed")
+        except Exception:
+            coerced = pd.to_datetime(df[col], errors="coerce")
         if coerced.notna().mean() >= 0.9:
             ts_candidates.append(col)
     # If multiple date-like columns exist, take the first; if none, return None
@@ -334,7 +373,10 @@ def detect_roles(df: pd.DataFrame):
 def daily_integrity_status(df: pd.DataFrame, ts_col: str):
     if not ts_col:
         return {"status": "no-ts"}
-    s = pd.to_datetime(df[ts_col], errors="coerce").dropna().sort_values().reset_index(drop=True)
+    try:
+        s = pd.to_datetime(df[ts_col], errors="coerce", format="mixed").dropna().sort_values().reset_index(drop=True)
+    except Exception:
+        s = pd.to_datetime(df[ts_col], errors="coerce").dropna().sort_values().reset_index(drop=True)
     if s.empty:
         return {"status": "no-ts"}
     diffs = s.diff().dropna()
@@ -402,7 +444,10 @@ def _standardize_missing_tokens_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def _normalize_dates_to_day(series: pd.Series) -> pd.Series:
     try:
-        parsed = pd.to_datetime(series, errors="coerce")
+        try:
+            parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+        except Exception:
+            parsed = pd.to_datetime(series, errors="coerce")
         # Normalize to midnight to ensure day-wise diffs
         return parsed.dt.normalize()
     except Exception:
