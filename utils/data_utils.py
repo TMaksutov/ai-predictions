@@ -19,36 +19,19 @@ def prepare_series_from_dataframe(raw_df: pd.DataFrame, file_info: dict):
     Convert raw CSV dataframe to standardized time series format.
     Returns (series_df, load_meta) where series has 'ds' and 'y' columns.
     """
-    if raw_df.empty or file_info.get("error"):
+    if raw_df.empty or file_info.get("error") or raw_df.shape[1] < 2:
         return pd.DataFrame(), {}
 
-    orig_cols = list(raw_df.columns)
-    if len(orig_cols) < 2:
-        return pd.DataFrame(), {}
-
-    first_col = orig_cols[0]
-    last_col = orig_cols[-1]
-
-    # Convert to datetime and numeric
-    ds_series = pd.to_datetime(raw_df[first_col], errors="coerce")
-    y_series = pd.to_numeric(raw_df[last_col], errors="coerce")
-
-    # Create standardized series
-    series = pd.DataFrame({
-        "ds": ds_series,
-        "y": y_series,
-    })
-
-    # Add any intermediate feature columns
-    for c in orig_cols[1:-1]:
-        if c not in ("ds", "y"):
-            series[c] = raw_df[c]
-
+    first, last = raw_df.columns[0], raw_df.columns[-1]
+    series = raw_df.copy()
+    # Insert standardized columns and preserve intermediate features
+    series.insert(0, "ds", pd.to_datetime(series.pop(first), errors="coerce"))
+    series["y"] = pd.to_numeric(series.pop(last), errors="coerce")
     series = series.sort_values("ds").reset_index(drop=True)
 
     load_meta = {
-        "original_time_col": first_col,
-        "original_target_col": last_col,
+        "original_time_col": first,
+        "original_target_col": last,
         "trailing_missing_count": 0,
         "last_known_ds": series["ds"].max() if not series.empty else None,
         "future_rows_raw": pd.DataFrame(),

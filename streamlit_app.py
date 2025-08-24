@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from modeling import get_fast_estimators, train_full_and_forecast_future
+from modeling import get_fast_estimators
 from modeling import train_on_known_and_forecast_missing, UnifiedTimeSeriesTrainer
 from features import build_features as _build_features
 from data_io import read_table_any as _read_table_any
@@ -60,6 +60,39 @@ def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
 
     trainer = UnifiedTimeSeriesTrainer()
     return trainer.benchmark_models(series_df, test_fraction=test_fraction)
+
+
+# Helper functions for model selection
+def _base_model_type(model_name: str) -> str:
+    """Extract base type from a model name by trimming trailing digits."""
+    try:
+        for idx, ch in enumerate(model_name):
+            if ch.isdigit():
+                return model_name[:idx] or model_name
+        return model_name
+    except Exception:
+        return str(model_name)
+
+
+def _pick_top_unique_models(results: list, max_models: int = 5) -> list:
+    """Pick up to N best models with unique base types by RMSE."""
+    chosen = []
+    seen_types = set()
+    try:
+        for r in sorted(results, key=lambda x: x.get("rmse", float("inf"))):
+            name = r.get("name")
+            if not name:
+                continue
+            base = _base_model_type(name)
+            if base in seen_types:
+                continue
+            seen_types.add(base)
+            chosen.append(name)
+            if len(chosen) >= max_models:
+                break
+    except Exception:
+        pass
+    return chosen
 
 
  # -----------------------------
@@ -199,14 +232,24 @@ try:
         future_df = None
         future_horizon = 0
         selected_models = set()
+        # Compute top unique models (max 5, unique base type)
+        top_unique_models = _pick_top_unique_models(results, max_models=5)
+        top_unique_set = set(top_unique_models)
         if best_name is not None:
             # Initialize or reconcile visibility state
             available_models = [r["name"] for r in results]
             visibility = st.session_state.get("model_visibility")
-            if not isinstance(visibility, dict) or set(visibility.keys()) != set(available_models):
-                # Default: show only the best model
-                visibility = {name: (name == best_name) for name in available_models}
+            prev_key = st.session_state.get("visibility_key")
+            if (not isinstance(visibility, dict)) or (set(visibility.keys()) != set(available_models)):
+                # Model set changed: reset defaults to top unique models
+                visibility = {name: (name in top_unique_set) for name in available_models}
                 st.session_state["model_visibility"] = visibility
+                st.session_state["visibility_key"] = bench_key
+            elif prev_key != bench_key:
+                # Dataset changed: reset defaults to top unique models for the new dataset
+                visibility = {name: (name in top_unique_set) for name in available_models}
+                st.session_state["model_visibility"] = visibility
+                st.session_state["visibility_key"] = bench_key
 
             # Apply any pending edits from the editor state so toggles reflect immediately on rerun
             try:
@@ -225,7 +268,11 @@ try:
             except Exception:
                 pass
 
-            # Create a compact benchmark table using st.dataframe
+            # Placeholders to control layout order: plot above, table below
+            plot_container = st.container()
+            table_container = st.container()
+
+            # Create a compact benchmark table using st.data_editor
             def _fmt(v):
                 try:
                     import math
@@ -241,11 +288,10 @@ try:
                 except Exception:
                     return str(v) if v is not None else ""
 
-            # Prepare table data
             table_data = []
             for r in results:
                 m = r["name"]
-                default_checked = bool(visibility.get(m, m == best_name))
+                default_checked = bool(visibility.get(m, m in top_unique_set))
                 table_data.append({
                     "Show": default_checked,
                     "Model": m,
@@ -253,42 +299,40 @@ try:
                     "Train (s)": _fmt(r.get('train_time_s', None)),
                     "Predict (s)": _fmt(r.get('predict_time_s', None))
                 })
-            
-            # Create DataFrame
+
             results_df = pd.DataFrame(table_data)
-            
-            # Display editable table
-            edited_df = st.data_editor(
-                results_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Show": st.column_config.CheckboxColumn(
-                        "Show",
-                        help="Select models to display in the plot",
-                        default=False,
-                    ),
-                    "Model": st.column_config.TextColumn(
-                        "Model",
-                        disabled=True,
-                    ),
-                    f"{METRIC_NAME}": st.column_config.TextColumn(
-                        f"{METRIC_NAME}",
-                        disabled=True,
-                    ),
-                    "Train (s)": st.column_config.TextColumn(
-                        "Train (s)",
-                        disabled=True,
-                    ),
-                    "Predict (s)": st.column_config.TextColumn(
-                        "Predict (s)",
-                        disabled=True,
-                    ),
-                },
-                key="model_table_editor"
-            )
-            
-            # Update visibility based on edited table
+
+            with table_container:
+                edited_df = st.data_editor(
+                    results_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Show": st.column_config.CheckboxColumn(
+                            "Show",
+                            help="Select models to display in the plot",
+                            default=False,
+                        ),
+                        "Model": st.column_config.TextColumn(
+                            "Model",
+                            disabled=True,
+                        ),
+                        f"{METRIC_NAME}": st.column_config.TextColumn(
+                            f"{METRIC_NAME}",
+                            disabled=True,
+                        ),
+                        "Train (s)": st.column_config.TextColumn(
+                            "Train (s)",
+                            disabled=True,
+                        ),
+                        "Predict (s)": st.column_config.TextColumn(
+                            "Predict (s)",
+                            disabled=True,
+                        ),
+                    },
+                    key="model_table_editor"
+                )
+
             for _, row in edited_df.iterrows():
                 model_name = row["Model"]
                 if model_name in visibility:
@@ -298,7 +342,6 @@ try:
             selected_models = {name for name, v in visibility.items() if v}
             if not selected_models and best_name is not None:
                 selected_models = {best_name}
-                st.session_state[f"vis_{best_name}"] = True
 
             # Compute future forecasts once per dataset+future horizon and cache them
             if not future_rows.empty:
@@ -315,6 +358,10 @@ try:
                     model_to_future = {}
                     for res in results:
                         model_name = res.get("name")
+                        # Restrict future predictions to top unique models only
+                        if model_name not in top_unique_set:
+                            model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                            continue
                         est = name_to_est.get(model_name)
                         if est is None:
                             model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
@@ -339,7 +386,11 @@ try:
                 model_to_future = future_cache.get(future_key, {})
                 for res in results:
                     model_name = res.get("name")
-                    res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
+                    # Ensure only top unique models have future predictions; others remain empty
+                    if model_name in top_unique_set:
+                        res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
+                    else:
+                        res["future_df"] = pd.DataFrame({"ds": [], "yhat": []})
 
                 # Set horizon from any model with predictions
                 for res in results:
@@ -347,19 +398,38 @@ try:
                         future_horizon = len(res["future_df"]) or 0
                         break
 
-        # Create and display plot using utility function
+        # Create and display plot using utility function (rendered above the table)
         fig = create_forecast_plot(
             series=series, results=results, future_df=None,
             show_only_test=show_only_test, split_ds=split_ds,
             hide_non_chosen_models=False, best_name=best_name,
             visible_models=selected_models,
         )
-        st.pyplot(fig)
-        # Controls rendered under the graph (they update session_state and trigger rerun)
-        controls_container = st.container()
-        with controls_container:
-            # New user-facing toggles propose showing additional content. Defaults are unchecked (False),
-            # while underlying state keeps content hidden by default.
+        with plot_container:
+            st.pyplot(fig)
+        # Optional: show the dataframe used for training/prediction (first 5 rows)
+        if not hide_features_table:
+            try:
+                features_df, feature_cols = _build_features(series)
+                st.markdown("#### Training/prediction data (first 5 rows)")
+                st.dataframe(features_df.head(5), use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not build features preview: {e}")
+
+        # Results table rendered below with per-model checkboxes
+
+        # Render checklist in sidebar grouped by module
+        try:
+            file_info_local = locals().get('file_info', {})
+            raw_df_local = locals().get('raw_df', pd.DataFrame())
+            grouped = build_checklist_grouped(raw_df_local, file_info_local, series, load_meta, results, future_horizon or 0)
+            _render_checklist(grouped)
+        except Exception:
+            pass
+
+        # Sidebar display toggles (placed after checklist)
+        with st.sidebar:
+            st.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Settings</div>", unsafe_allow_html=True)
             st.checkbox(
                 "Show full history",
                 key="show_full_history",
@@ -373,26 +443,6 @@ try:
                 value=st.session_state.get("show_training_data_preview", False)
             )
             st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
-
-        # Optional: show the dataframe used for training/prediction (first 5 rows)
-        if not hide_features_table:
-            try:
-                features_df, feature_cols = _build_features(series)
-                st.markdown("#### Training/prediction data (first 5 rows)")
-                st.dataframe(features_df.head(5), use_container_width=True)
-            except Exception as e:
-                st.warning(f"Could not build features preview: {e}")
-
-        # Results table rendered above with per-model checkboxes
-
-        # Render checklist in sidebar grouped by module
-        try:
-            file_info_local = locals().get('file_info', {})
-            raw_df_local = locals().get('raw_df', pd.DataFrame())
-            grouped = build_checklist_grouped(raw_df_local, file_info_local, series, load_meta, results, future_horizon or 0)
-            _render_checklist(grouped)
-        except Exception:
-            pass
 
 except Exception:
     # Suppress main-screen error banners; checklist already provides feedback

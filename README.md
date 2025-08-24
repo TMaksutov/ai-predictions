@@ -30,6 +30,18 @@ python -m streamlit run streamlit_app.py
 
 You can upload your own CSV (time column first, target last), or just run with the bundled `sample.csv`.
 
+### Quick run in Cursor (Windows)
+
+Open the Cursor terminal at the project root and run:
+
+```powershell
+& .\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m streamlit run streamlit_app.py --server.port 8501 --server.address 127.0.0.1
+```
+
+Then open `http://localhost:8501`.
+
 ## Data format and workflow
 
 - Provide history with known target values.

@@ -9,6 +9,27 @@ from datetime import datetime, date
 
 import pandas as pd
 from features import analyze_preprocessing
+try:
+    from utils.config import (
+        AUTO_DETECT_FOURIER,
+        AUTO_MAX_PERIOD,
+        AUTO_TOP_N,
+        AUTO_MIN_CYCLES,
+        FOURIER_PERIODS,
+        FOURIER_HARMONICS,
+    )
+except Exception:
+    AUTO_DETECT_FOURIER = True
+    AUTO_MAX_PERIOD = 400
+    AUTO_TOP_N = 3
+    AUTO_MIN_CYCLES = 3
+    FOURIER_PERIODS = [7, 30, 365]
+    FOURIER_HARMONICS = 3
+try:
+    from utils.seasonality import detect_seasonal_periods
+except Exception:
+    def detect_seasonal_periods(y, max_period: int = 400, top_n: int = 3, min_cycles: int = 3):
+        return []
 
 
 def _normalize_trailing_separators(raw_bytes: bytes, sep_hint: Optional[str]) -> Tuple[bytes, Optional[str], dict]:
@@ -404,6 +425,7 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     groups = {
         "Open & analyze": [],
         "Features & prep": [],
+        "Seasonality": [],
         "Model & predict": [],
     }
 
@@ -575,6 +597,34 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     else:
         add("Features & prep", "Future rows provided: 0 (required)", "error")
 
+    # Seasonality insight (non-blocking)
+    try:
+        fixed_periods = list(dict.fromkeys(int(p) for p in FOURIER_PERIODS if int(p) > 1))
+    except Exception:
+        fixed_periods = [7, 30, 365]
+
+    detected_periods: List[int] = []
+    try:
+        if AUTO_DETECT_FOURIER and isinstance(series, pd.DataFrame) and not series.empty and "y" in series.columns:
+            y_series = pd.to_numeric(series["y"], errors="coerce").dropna()
+            if len(y_series) >= max(10, 2):
+                detected_periods = detect_seasonal_periods(
+                    y_series.to_numpy(),
+                    max_period=int(AUTO_MAX_PERIOD),
+                    top_n=int(AUTO_TOP_N),
+                    min_cycles=int(AUTO_MIN_CYCLES),
+                ) or []
+                detected_periods = [int(p) for p in detected_periods if int(p) > 1]
+    except Exception:
+        detected_periods = []
+
+    if fixed_periods:
+        groups["Seasonality"].append(("ok", f"Fixed Fourier periods configured: {fixed_periods}; harmonics={FOURIER_HARMONICS}"))
+    if detected_periods:
+        groups["Seasonality"].append(("ok", f"Detected periods (top {AUTO_TOP_N}, <= {AUTO_MAX_PERIOD} days): {detected_periods}"))
+    else:
+        groups["Seasonality"].append(("warn", f"No strong long periods detected (<= {AUTO_MAX_PERIOD} days), weekly-only may apply"))
+
     # Model & predict mode selection summary
     mode = "Predict missing targets (required)"
     planned_steps = num_future_rows
@@ -594,6 +644,7 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     ordered = [
         ("Open & analyze", groups["Open & analyze"]),
         ("Features & prep", groups["Features & prep"]),
+        ("Seasonality", groups["Seasonality"]),
         ("Model & predict", groups["Model & predict"]),
     ]
     return ordered

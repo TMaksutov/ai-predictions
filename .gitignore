@@ -12,3 +12,39 @@ dist/
 build/
 coverage/
 
+.coverage
+htmlcov/
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Additional virtual environments
+venv/
+env/
+ENV/
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+Thumbs.db
+
+# Logs
+*.log
+logs/
+log/
+
+# Streamlit
+.streamlit/
+.streamlit_run.log
+
+# Data directories
+data/
+datasets/
+sample_datasets/
+
+# Misc caches
+.cache/
+.scratch/
