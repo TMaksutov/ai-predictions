@@ -471,7 +471,6 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
         "Open & analyze": [],
         "Features & prep": [],
         "Seasonality": [],
-        "Model & predict": [],
     }
 
     def add(group: str, text: str, status: str):
@@ -670,27 +669,15 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     else:
         groups["Seasonality"].append(("warn", f"No strong long periods detected (<= {AUTO_MAX_PERIOD} days), weekly-only may apply"))
 
-    # Model & predict mode selection summary
-    mode = "Predict missing targets (required)"
-    planned_steps = num_future_rows
-    # If exogenous features exist and are incomplete for future rows, flag here too
-    status = "ok"
-    if len(feature_cols) > 0 and not future_features_ok:
-        status = "error"
-    if planned_steps <= 0:
-        status = "error"
-    add("Model & predict", f"Mode: {mode}; steps={planned_steps}", status)
-
     # Final summary
     final_error = any(status == "error" for _, items in groups.items() for status, _ in items)
     summary = f"Summary: headers={'yes' if header else 'no'}, rows={n}, columns={c}, target_type={target_type or 'n/a'}"
-    add("Model & predict", summary, "error" if final_error else "ok")
+    add("Seasonality", summary, "error" if final_error else "ok")
 
     ordered = [
         ("Open & analyze", groups["Open & analyze"]),
         ("Features & prep", groups["Features & prep"]),
         ("Seasonality", groups["Seasonality"]),
-        ("Model & predict", groups["Model & predict"]),
     ]
     return ordered
 

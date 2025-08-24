@@ -422,6 +422,35 @@ try:
 
         # Results table rendered below with per-model checkboxes
 
+        # Add download button for predictions
+        if selected_models and future_horizon > 0:
+            # Prepare data for download
+            download_df = raw_df.copy()
+            # Get predictions from the best visible model
+            best_visible_model = None
+            best_visible_rmse = float('inf')
+            for r in results:
+                if r['name'] in selected_models and r.get('rmse', float('inf')) < best_visible_rmse:
+                    best_visible_model = r
+                    best_visible_rmse = r.get('rmse', float('inf'))
+            
+            if best_visible_model and not best_visible_model['future_df'].empty:
+                future_preds = best_visible_model['future_df']
+                # Add predictions to the original dataframe
+                download_df.loc[download_df['y'].isna(), 'y'] = future_preds['yhat'].values
+                
+                # Create download button
+                csv_buffer = io.StringIO()
+                download_df.to_csv(csv_buffer, index=False)
+                csv_str = csv_buffer.getvalue()
+                
+                st.sidebar.download_button(
+                    label="Download Predictions as CSV",
+                    data=csv_str,
+                    file_name="predictions.csv",
+                    mime="text/csv",
+                )
+
         # Render checklist in sidebar grouped by module
         try:
             file_info_local = locals().get('file_info', {})

@@ -27,11 +27,60 @@ except ImportError:
     AUTO_TOP_N = 3
     AUTO_MIN_CYCLES = 3
 
-try:
-    from utils.seasonality import detect_seasonal_periods
-except Exception:
-    def detect_seasonal_periods(y: np.ndarray, max_period: int = 400, top_n: int = 3, min_cycles: int = 3) -> List[int]:
+def detect_seasonal_periods(y: np.ndarray, max_period: int = 400, top_n: int = 3, min_cycles: int = 3) -> List[int]:
+    """
+    Return up to top_n candidate integer-day periods detected in y using statsmodels seasonal decomposition
+    and ACF analysis. Requires at least min_cycles cycles in the series length.
+    
+    Parameters:
+    -----------
+    y : np.ndarray
+        Input time series data
+    max_period : int, default=400
+        Maximum period to consider
+    top_n : int, default=3
+        Maximum number of seasonal periods to return
+    min_cycles : int, default=3
+        Minimum number of cycles required in the data
+        
+    Returns:
+    --------
+    List[int]
+        List of detected seasonal periods in order of significance
+    """
+    from statsmodels.tsa.stattools import acf
+    
+    y = np.asarray(y, dtype=float)
+    y = y[np.isfinite(y)]
+    n = y.size
+    
+    if n < 16:  # Need minimum data points
         return []
+        
+    # Calculate ACF
+    acf_values = acf(y, nlags=min(max_period, max(1, int(n // 2))), fft=True)
+    
+    # Find peaks in ACF
+    peaks = []
+    for i in range(2, len(acf_values) - 1):
+        if (acf_values[i] > acf_values[i-1] and 
+            acf_values[i] > acf_values[i+1] and 
+            acf_values[i] > 0.1):  # Significant correlation threshold
+            if i <= max_period and n >= i * min_cycles:
+                peaks.append((i, acf_values[i]))
+    
+    # Sort peaks by correlation strength
+    peaks.sort(key=lambda x: x[1], reverse=True)
+    
+    # Get periods from top peaks
+    periods = []
+    for period, _ in peaks[:top_n]:
+        # Avoid near-duplicates and harmonics
+        if not any(abs(period - p) <= 2 or (max(period, p) % min(period, p) == 0) 
+                  for p in periods if p > 0):
+            periods.append(period)
+    
+    return periods[:top_n]
 
 
 # Note: Fourier terms functionality removed to simplify the feature engineering pipeline
