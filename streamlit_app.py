@@ -74,7 +74,7 @@ def _base_model_type(model_name: str) -> str:
         return str(model_name)
 
 
-def _pick_top_unique_models(results: list, max_models: int = 5) -> list:
+def _pick_top_unique_models(results: list, max_models: int = 3) -> list:
     """Pick up to N best models with unique base types by RMSE."""
     chosen = []
     seen_types = set()
@@ -236,8 +236,8 @@ try:
         future_df = None
         future_horizon = 0
         selected_models = set()
-        # Compute top unique models (max 5, unique base type)
-        top_unique_models = _pick_top_unique_models(results, max_models=5)
+        # Compute top unique models (max 3, unique base type)
+        top_unique_models = _pick_top_unique_models(results, max_models=3)
         top_unique_set = set(top_unique_models)
         if best_name is not None:
             # Initialize or reconcile visibility state
