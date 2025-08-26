@@ -14,7 +14,12 @@ import json
 import os
 from urllib import request
 
-st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
+st.set_page_config(
+    page_title="Daily Data Forecast",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Enforce a wider sidebar
 st.markdown(
@@ -134,8 +139,8 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
 )
 
-# Privacy note (anonymous upload counts only; no personal data)
-st.sidebar.caption("This app collects upload counts only. No personal data.")
+# Privacy note ( upload counts only; no personal data)
+st.sidebar.caption("This app collects  upload counts only. No personal data.")
 
  
 
