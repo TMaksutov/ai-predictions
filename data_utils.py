@@ -25,10 +25,58 @@ def prepare_series_from_dataframe(raw_df: pd.DataFrame, file_info: dict):
         return pd.DataFrame(), {}
 
     first, last = raw_df.columns[0], raw_df.columns[-1]
+    # Work off the original columns without mutating until we build the final frame
+    date_values = raw_df[first]
+    target_values = raw_df[last]
+
+    # Prefer the date format detected during loading/validation to avoid slow fallback parsing
+    try:
+        detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
+    except Exception:
+        detected_fmt = None
+
+    # Parse dates robustly without popping columns from the working frame
+    ds_parsed = None
+    try:
+        if detected_fmt:
+            ds_parsed = pd.to_datetime(date_values, errors="coerce", format=str(detected_fmt))
+        else:
+            # Fast mixed parser first, then day-first heuristic, then generic
+            try:
+                ds_parsed = pd.to_datetime(date_values, errors="coerce", format="mixed")
+            except Exception:
+                ds_parsed = None
+            if ds_parsed is None or ds_parsed.isna().any():
+                try:
+                    ds_parsed = pd.to_datetime(date_values, errors="coerce", dayfirst=True)
+                except Exception:
+                    ds_parsed = None
+            if ds_parsed is None:
+                ds_parsed = pd.to_datetime(date_values, errors="coerce")
+    except Exception:
+        ds_parsed = pd.to_datetime(date_values, errors="coerce")
+
+    # Build the standardized series (normalize to day to avoid time drift)
     series = raw_df.copy()
-    # Insert standardized columns and preserve intermediate features
-    series.insert(0, "ds", pd.to_datetime(series.pop(first), errors="coerce"))
-    series["y"] = pd.to_numeric(series.pop(last), errors="coerce")
+    try:
+        ds_parsed = ds_parsed.dt.normalize()
+    except Exception:
+        pass
+    series.insert(0, "ds", ds_parsed)
+    series["y"] = pd.to_numeric(target_values, errors="coerce")
+    # Drop original date/target columns if they still exist by name
+    try:
+        if first in series.columns:
+            series.drop(columns=[first], inplace=True)
+    except Exception:
+        pass
+    try:
+        # Avoid double-dropping if first==last (single-column edge case)
+        if last in series.columns and last != first:
+            series.drop(columns=[last], inplace=True)
+    except Exception:
+        pass
+
     series = series.sort_values("ds").reset_index(drop=True)
 
     load_meta = {

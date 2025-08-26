@@ -188,12 +188,18 @@ class DataLoader:
     def _read_and_normalize_content(self):
         print("➡️ Normalizing CSV content...")
         if self.raw_bytes is not None:
-            normalized_bytes, _, norm_stats = _normalize_trailing_separators(
+            normalized_bytes, sep_suggested, norm_stats = _normalize_trailing_separators(
                 self.raw_bytes, self.info["separator"]
             )
             self.read_target = io.BytesIO(normalized_bytes)
             self.info["trailing_separator_lines_fixed"] = norm_stats.get("lines_fixed", 0)
             print(f"✅ Content normalized. Lines fixed: {self.info['trailing_separator_lines_fixed']}")
+            # If we don't already have a separator, adopt the one suggested during normalization
+            try:
+                if not self.info.get("separator") and sep_suggested in {",", ";", "\t", "|"}:
+                    self.info["separator"] = sep_suggested
+            except Exception:
+                pass
         else:
             self.read_target = self.file_obj_or_path
             print("✅ Content will be read directly (no in-memory normalization).")
@@ -201,18 +207,46 @@ class DataLoader:
     def _detect_delimiter(self):
         print("➡️ Detecting CSV delimiter...")
         detected_sep = None
+        # Prefer sampling from the normalized buffer if available
         try:
+            if hasattr(self, "read_target") and hasattr(self.read_target, "getvalue"):
+                sample_bytes = self.read_target.getvalue()[:4096]
+            else:
+                sample_bytes = (self.buf_for_sniff or b"")
+            sample_text = (sample_bytes or b"").decode(errors="ignore")
+        except Exception:
             sample_text = (self.buf_for_sniff or b"").decode(errors="ignore")
+
+        try:
             if sample_text:
                 sniffer = csv.Sniffer()
                 dialect = sniffer.sniff(sample_text, delimiters=[",", ";", "\t", "|"])
                 detected_sep = dialect.delimiter
         except Exception:
-            line = sample_text.splitlines()[0] if sample_text else ""
-            for cand in [",", ";", "\t", "|"]:
-                if cand in line:
-                    detected_sep = cand
-                    break
+            detected_sep = None
+
+        # Heuristic override: if header clearly contains a candidate, prefer it
+        try:
+            first_line = sample_text.splitlines()[0] if sample_text else ""
+            if ";" in first_line and detected_sep not in {";"}:
+                detected_sep = ";"
+            elif "," in first_line and not detected_sep:
+                detected_sep = ","
+            elif not detected_sep:
+                for cand in [",", ";", "\t", "|"]:
+                    if cand in first_line:
+                        detected_sep = cand
+                        break
+        except Exception:
+            pass
+
+        # If normalization suggested a separator earlier, prefer it when detection failed
+        try:
+            if not detected_sep and self.info.get("separator") in {",", ";", "\t", "|"}:
+                detected_sep = self.info["separator"]
+        except Exception:
+            pass
+
         self.info["separator"] = detected_sep
         print(f"✅ Delimiter detected: '{detected_sep}'")
 
@@ -536,7 +570,8 @@ class DataValidator:
             num_future_rows = int(len(self.df_norm) - (self.last_observed_idx + 1))
         
         if num_future_rows == 0:
-            self._add_check("Future rows provided: 0 (required for prediction)", "error")
+            # Do not hard-stop here; the main app will show a targeted message.
+            self._add_check("Future rows provided: 0 (add future dates with blank target to predict)", "warn")
         self._add_check(f"Future rows provided: {num_future_rows}")
 
         try:

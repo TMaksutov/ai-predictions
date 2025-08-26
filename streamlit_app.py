@@ -161,6 +161,17 @@ else:
 
 # Prepare standardized series
 series, load_meta = prepare_series_from_dataframe(raw_df, file_info)
+try:
+    # Enforce the detected date format consistently after checks
+    detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
+    if not pd.api.types.is_datetime64_any_dtype(series["ds"]):
+        if detected_fmt:
+            series["ds"] = pd.to_datetime(series["ds"], errors="coerce", format=str(detected_fmt))
+        else:
+            series["ds"] = pd.to_datetime(series["ds"], errors="coerce", dayfirst=True)
+    series["ds"] = series["ds"].dt.normalize()
+except Exception:
+    pass
 
 if data_source_name:
     try:
@@ -242,9 +253,27 @@ try:
         if bench_key in bench_cache:
             results = bench_cache[bench_key]
         else:
-            results = run_benchmark(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
-            bench_cache[bench_key] = results
-            st.session_state["bench_cache"] = bench_cache
+            try:
+                with st.spinner("Training and evaluating models..."):
+                    results = run_benchmark(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
+                bench_cache[bench_key] = results
+                st.session_state["bench_cache"] = bench_cache
+            except Exception as e:
+                results = []
+                st.error(f"Benchmark failed: {e}")
+                # Fallback: provide a few baseline models so future forecasting can proceed
+                try:
+                    baseline = [name for name, _ in get_fast_estimators()][:3]
+                except Exception:
+                    baseline = []
+                if baseline:
+                    results = [
+                        {"name": n, "rmse": float("inf"), "mape": None,
+                         "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame(),
+                         "train_time_s": None, "predict_time_s": None,
+                         "estimator_params": {}}
+                        for n in baseline
+                    ]
 
         # Get split date for plotting
         split_ds = None
@@ -260,6 +289,9 @@ try:
         future_df = None
         future_horizon = 0
         selected_models = set()
+        # Placeholders to control layout order: plot above, table below
+        plot_container = st.container()
+        table_container = st.container()
         # Compute top unique models (max 3, unique base type)
         top_unique_models = _pick_top_unique_models(results, max_models=3)
         top_unique_set = set(top_unique_models)
@@ -296,9 +328,7 @@ try:
             except Exception:
                 pass
 
-            # Placeholders to control layout order: plot above, table below
-            plot_container = st.container()
-            table_container = st.container()
+            # Table will render below the plot
 
             # Create a compact benchmark table using st.data_editor
             def _fmt(v):
@@ -386,7 +416,12 @@ try:
             # Compute future forecasts once per dataset+future horizon and cache them
             if not future_rows.empty:
                 try:
-                    fr_ds_key = ",".join(pd.to_datetime(future_rows["ds"]).dt.strftime('%Y-%m-%d').tolist())
+                    ser_ds = future_rows["ds"]
+                    if pd.api.types.is_datetime64_any_dtype(ser_ds):
+                        key_vals = ser_ds.dt.strftime('%Y-%m-%d').tolist()
+                    else:
+                        key_vals = pd.to_datetime(ser_ds, errors="coerce").dt.strftime('%Y-%m-%d').tolist()
+                    fr_ds_key = ",".join(key_vals)
                 except Exception:
                     fr_ds_key = str(len(future_rows))
                 future_key = f"{_df_fingerprint(series)}|future={fr_ds_key}"
@@ -394,33 +429,46 @@ try:
 
                 # Build a map of predictions per model if not cached
                 if future_key not in future_cache:
-                    name_to_est = {name: est for name, est in get_fast_estimators()}
-                    model_to_future = {}
-                    for res in results:
-                        model_name = res.get("name")
-                        # Restrict future predictions to top unique models only
-                        if model_name not in top_unique_set:
-                            model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
-                            continue
-                        est = name_to_est.get(model_name)
-                        if est is None:
-                            model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
-                            continue
-                        params = res.get("estimator_params", {})
-                        try:
-                            if params:
-                                est.set_params(**params)
-                        except Exception:
-                            pass
-                        try:
-                            res_future_df = train_on_known_and_forecast_missing(
-                                series, est, future_rows=future_rows
-                            )
-                        except Exception:
-                            res_future_df = pd.DataFrame({"ds": [], "yhat": []})
-                        model_to_future[model_name] = res_future_df
-                    future_cache[future_key] = model_to_future
-                    st.session_state["future_cache"] = future_cache
+                    try:
+                        with st.spinner("Forecasting future values..."):
+                            name_to_est = {name: est for name, est in get_fast_estimators()}
+                            model_to_future = {}
+                            for res in results:
+                                model_name = res.get("name")
+                                # Restrict future predictions to top unique models only
+                                if model_name not in top_unique_set:
+                                    model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    continue
+                                est = name_to_est.get(model_name)
+                                if est is None:
+                                    model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    continue
+                                params = res.get("estimator_params", {})
+                                try:
+                                    if params:
+                                        est.set_params(**params)
+                                except Exception:
+                                    pass
+                                try:
+                                    res_future_df = train_on_known_and_forecast_missing(
+                                        series, est, future_rows=future_rows
+                                    )
+                                    if res_future_df.empty:
+                                        # provide at least a flat continuation to avoid blank UI
+                                        res_future_df = pd.DataFrame({
+                                            "ds": future_rows["ds"],
+                                            "yhat": [series["y"].dropna().iloc[-1]] * len(future_rows)
+                                        })
+                                except Exception:
+                                    res_future_df = pd.DataFrame({
+                                        "ds": future_rows["ds"],
+                                        "yhat": [series["y"].dropna().iloc[-1] if series["y"].notna().any() else 0.0] * len(future_rows)
+                                    })
+                                model_to_future[model_name] = res_future_df
+                            future_cache[future_key] = model_to_future
+                            st.session_state["future_cache"] = future_cache
+                    except Exception as e:
+                        st.error(f"Forecasting failed: {e}")
 
                 # Attach cached future forecasts to results
                 model_to_future = future_cache.get(future_key, {})
@@ -481,10 +529,19 @@ try:
                     pred_map = {}
                 download_df = raw_df.copy()
                 try:
-                    ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                    # Use detected date format if available to avoid re-parsing ambiguities
+                    detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
+                    if detected_fmt:
+                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", format=str(detected_fmt)).dt.normalize()
+                    else:
+                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True).dt.normalize()
                     download_df[pred_col] = ds_norm.map(pred_map)
                 except Exception:
-                    download_df[pred_col] = None
+                    try:
+                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                        download_df[pred_col] = ds_norm.map(pred_map)
+                    except Exception:
+                        download_df[pred_col] = None
                 out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
                 st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
                 st.sidebar.download_button(
@@ -513,6 +570,10 @@ try:
             )
             st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
-except Exception:
-    # Suppress main-screen error banners; checklist already provides feedback
+except Exception as e:
+    # Show checklist and the error so the UI does not appear frozen
     _render_checklist(checklist_items)
+    try:
+        st.error(f"Unexpected error: {e}")
+    except Exception:
+        pass

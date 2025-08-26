@@ -16,8 +16,14 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     """
     fig, ax = plt.subplots(figsize=(20, 6))
 
-    # Optionally restrict actuals to only the test window
-    visible_series = series
+    # Ensure series ds is datetime normalized
+    visible_series = series.copy()
+    try:
+        if not pd.api.types.is_datetime64_any_dtype(visible_series["ds"]):
+            visible_series["ds"] = pd.to_datetime(visible_series["ds"], errors="coerce")
+        visible_series["ds"] = visible_series["ds"].dt.normalize()
+    except Exception:
+        pass
     if show_only_test and split_ds is not None:
         # Include the last training point to avoid gaps with predictions
         test_data = series[series["ds"] >= split_ds]
@@ -42,6 +48,12 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             y_max = max(y_max, fcast["yhat"].max())
         fdf = res.get("future_df")
         if fdf is not None and not fdf.empty:
+            try:
+                if not pd.api.types.is_datetime64_any_dtype(fdf["ds"]):
+                    fdf["ds"] = pd.to_datetime(fdf["ds"], errors="coerce")
+                fdf["ds"] = fdf["ds"].dt.normalize()
+            except Exception:
+                pass
             y_min = min(y_min, fdf["yhat"].min())
             y_max = max(y_max, fdf["yhat"].max())
     # Also consider single future_df if passed explicitly
@@ -92,6 +104,12 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         forecast_df = res["forecast_df"]
         if forecast_df.empty:
             continue
+        try:
+            if not pd.api.types.is_datetime64_any_dtype(forecast_df["ds"]):
+                forecast_df["ds"] = pd.to_datetime(forecast_df["ds"], errors="coerce")
+            forecast_df["ds"] = forecast_df["ds"].dt.normalize()
+        except Exception:
+            pass
 
         label = res['name']
 
@@ -135,6 +153,12 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             fdf = res.get("future_df")
             if fdf is None or fdf.empty:
                 continue
+            try:
+                if not pd.api.types.is_datetime64_any_dtype(fdf["ds"]):
+                    fdf["ds"] = pd.to_datetime(fdf["ds"], errors="coerce")
+                fdf["ds"] = fdf["ds"].dt.normalize()
+            except Exception:
+                pass
 
             if not last_known_actual.empty:
                 connection_point = pd.DataFrame({
