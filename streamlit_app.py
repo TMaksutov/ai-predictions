@@ -9,6 +9,10 @@ from data_io import load_data_with_checklist, validate_data_with_checklist
 from data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
 from plot_utils import create_forecast_plot, create_results_table
 import io
+import uuid
+import json
+import os
+from urllib import request
 
 st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
 
@@ -48,6 +52,31 @@ def _df_fingerprint(df: pd.DataFrame) -> str:
             return f"shape={df.shape}|{ds_min}|{ds_max}|y_count={count_y}"
         except Exception:
             return f"shape={df.shape}"
+
+
+def _ga_track(event_name, params=None):
+    """Send a minimal, anonymous GA4 Measurement Protocol event.
+
+    Requires secrets (or env vars): GA_MEASUREMENT_ID, GA_API_SECRET
+    """
+    try:
+        mid = st.secrets.get("GA_MEASUREMENT_ID") or os.environ.get("GA_MEASUREMENT_ID")
+        sec = st.secrets.get("GA_API_SECRET") or os.environ.get("GA_API_SECRET")
+        if not mid or not sec:
+            return
+        if "ga_client_id" not in st.session_state:
+            st.session_state["ga_client_id"] = str(uuid.uuid4())
+        payload = {
+            "client_id": st.session_state["ga_client_id"],
+            "events": [{"name": str(event_name), "params": params or {}}],
+        }
+        data = json.dumps(payload).encode("utf-8")
+        url = f"https://www.google-analytics.com/mp/collect?measurement_id={mid}&api_secret={sec}"
+        req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        request.urlopen(req, timeout=2)
+    except Exception:
+        # Never raise in UI; analytics is best-effort only
+        pass
 
 def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
     if test_fraction is None:
@@ -105,12 +134,22 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used."
 )
 
+# Privacy note (anonymous upload counts only; no personal data)
+st.sidebar.caption("This app collects upload counts only. No personal data.")
+
  
 
 # Load data using simplified logic
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
     raw_df, file_info = load_data_with_checklist(uploaded)
+    # Count a single upload event per user session; no PII sent
+    try:
+        if not st.session_state.get("ga_uploaded_once", False):
+            _ga_track("file_uploaded")
+            st.session_state["ga_uploaded_once"] = True
+    except Exception:
+        pass
 else:
     data_source_name = SAMPLE_PATH.name
     raw_df, file_info = load_default_dataset(SAMPLE_PATH)
@@ -327,28 +366,7 @@ try:
                     key="model_table_editor"
                 )
 
-            # Simple explanation and average accuracy for beginners
-            try:
-                # Compute average accuracy across models that have MAPE
-                if not results_df.empty and "Accuracy (%)" in results_df.columns:
-                    # Parse back to numeric for averaging
-                    def _to_float(x):
-                        try:
-                            return float(x)
-                        except Exception:
-                            return float("nan")
-                    avg_acc = pd.to_numeric(results_df["Accuracy (%)"].apply(_to_float), errors='coerce').mean()
-                else:
-                    avg_acc = float('nan')
-                info_text = (
-                    "Accuracy (%) is a simple guide derived from percentage error. "
-                    "Lower RMSE is still used to pick the best model."
-                )
-                st.markdown(info_text)
-                if pd.notna(avg_acc):
-                    st.markdown(f"Average accuracy across models: **{avg_acc:.1f}%**")
-            except Exception:
-                pass
+            
 
             for _, row in edited_df.iterrows():
                 model_name = row["Model"]
