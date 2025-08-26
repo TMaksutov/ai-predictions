@@ -276,10 +276,15 @@ try:
             for r in results:
                 m = r["name"]
                 default_checked = bool(visibility.get(m, m in top_unique_set))
+                # Convert mape (relative) to percent for computing accuracy only; not displayed
+                mape_rel = r.get('mape', None)
+                mape_pct = (mape_rel * 100.0) if isinstance(mape_rel, (int, float)) and pd.notna(mape_rel) else None
+                acc_pct = (100.0 - mape_pct) if isinstance(mape_pct, float) and pd.notna(mape_pct) else None
                 table_data.append({
                     "Show": default_checked,
                     "Model": m,
                     f"{METRIC_NAME}": _fmt(r.get('rmse', None)),
+                    "Accuracy (%)": _fmt(acc_pct),
                     "Train (s)": _fmt(r.get('train_time_s', None)),
                     "Predict (s)": _fmt(r.get('predict_time_s', None))
                 })
@@ -305,6 +310,11 @@ try:
                             f"{METRIC_NAME}",
                             disabled=True,
                         ),
+                        "Accuracy (%)": st.column_config.TextColumn(
+                            "Accuracy (%)",
+                            help="Approximate accuracy derived from percentage error. Info only.",
+                            disabled=True,
+                        ),
                         "Train (s)": st.column_config.TextColumn(
                             "Train (s)",
                             disabled=True,
@@ -316,6 +326,29 @@ try:
                     },
                     key="model_table_editor"
                 )
+
+            # Simple explanation and average accuracy for beginners
+            try:
+                # Compute average accuracy across models that have MAPE
+                if not results_df.empty and "Accuracy (%)" in results_df.columns:
+                    # Parse back to numeric for averaging
+                    def _to_float(x):
+                        try:
+                            return float(x)
+                        except Exception:
+                            return float("nan")
+                    avg_acc = pd.to_numeric(results_df["Accuracy (%)"].apply(_to_float), errors='coerce').mean()
+                else:
+                    avg_acc = float('nan')
+                info_text = (
+                    "Accuracy (%) is a simple guide derived from percentage error. "
+                    "Lower RMSE is still used to pick the best model."
+                )
+                st.markdown(info_text)
+                if pd.notna(avg_acc):
+                    st.markdown(f"Average accuracy across models: **{avg_acc:.1f}%**")
+            except Exception:
+                pass
 
             for _, row in edited_df.iterrows():
                 model_name = row["Model"]

@@ -21,6 +21,7 @@ from sklearn.preprocessing import StandardScaler
 
 from sklearn.base import BaseEstimator, clone
 import time
+from sklearn.metrics import mean_absolute_percentage_error
 
 from features import (
     build_features_internal,
@@ -262,8 +263,14 @@ class UnifiedTimeSeriesTrainer:
                     se = (y_test_arr - preds_arr) ** 2
                     mse = np.nanmean(se)
                     rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
+                    # Compute MAPE (relative, e.g., 0.05 == 5%) for information only
+                    try:
+                        mape = float(mean_absolute_percentage_error(y_test_arr, preds_arr))
+                    except Exception:
+                        mape = None
                 else:
                     rmse = float("inf")
+                    mape = None
 
                 forecast_df = pd.DataFrame({
                     "ds": test_ds_vals,
@@ -278,6 +285,7 @@ class UnifiedTimeSeriesTrainer:
                 results.append({
                     "name": name,
                     "rmse": rmse,
+                    "mape": mape,
                     "forecast_df": forecast_df,
                     "test_df": test_df,
                     "train_time_s": train_time_s,
@@ -289,6 +297,7 @@ class UnifiedTimeSeriesTrainer:
                 results.append({
                     "name": name,
                     "rmse": float("inf"),
+                    "mape": None,
                     "forecast_df": pd.DataFrame(),
                     "test_df": pd.DataFrame(),
                     "train_time_s": None,
