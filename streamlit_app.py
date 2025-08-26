@@ -5,10 +5,9 @@ import streamlit as st
 from modeling import get_fast_estimators
 from modeling import train_on_known_and_forecast_missing, UnifiedTimeSeriesTrainer
 from features import build_features as _build_features
-from data_io import read_table_any as _read_table_any
-from data_io import build_checklist_grouped
-from utils.data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
-from utils.plot_utils import create_forecast_plot, create_results_table
+from data_io import load_data_with_checklist, validate_data_with_checklist
+from data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
+from plot_utils import create_forecast_plot, create_results_table
 import io
 
 st.set_page_config(page_title="Simple TS Benchmark", layout="wide")
@@ -53,7 +52,7 @@ def _df_fingerprint(df: pd.DataFrame) -> str:
 def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
     if test_fraction is None:
         try:
-            from utils.config import DEFAULT_TEST_FRACTION
+            from config import DEFAULT_TEST_FRACTION
             test_fraction = DEFAULT_TEST_FRACTION
         except ImportError:
             test_fraction = 0.2
@@ -111,7 +110,7 @@ uploaded = st.sidebar.file_uploader(
 # Load data using simplified logic
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
-    raw_df, file_info = _read_table_any(uploaded)
+    raw_df, file_info = load_data_with_checklist(uploaded)
 else:
     data_source_name = SAMPLE_PATH.name
     raw_df, file_info = load_default_dataset(SAMPLE_PATH)
@@ -130,13 +129,12 @@ progress_container = st.sidebar.container()
 with progress_container:
     st.markdown("<div style='font-weight:600; margin:0 0 6px 0; text-align:center'>Checklist</div>", unsafe_allow_html=True)
 
-def _render_checklist(grouped_items):
+def _render_checklist(items):
     with progress_container:
-        for title, items in grouped_items:
-            st.markdown(f"<div style='font-weight:600; margin:6px 0 3px 0'>{title}</div>", unsafe_allow_html=True)
-            for idx, (status, text) in enumerate(items):
-                icon = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
-                st.markdown(f"<div style='margin:2px 0; line-height:1.2'>{icon} {text}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-weight:600; margin:6px 0 3px 0'>Validation Checklist</div>", unsafe_allow_html=True)
+        for status, text in items:
+            icon = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
+            st.markdown(f"<div style='margin:2px 0; line-height:1.2'>{icon} {text}</div>", unsafe_allow_html=True)
 
 # Persisted UI defaults for display controls
 for _key, _default in [
@@ -162,28 +160,10 @@ show_only_test = st.session_state.get("show_only_test", True)
 hide_features_table = st.session_state.get("hide_features_table", True)
 
 # Build checklist early and gate predictions/features if any non-OK in critical sections
-# Initial checklist with no modeling artifacts
-pre_grouped = build_checklist_grouped(
-    raw_df,
-    file_info,
-    series if isinstance(series, pd.DataFrame) else pd.DataFrame(),
-    load_meta,
-    results=[],
-    future_horizon=0,
-)
+checklist_items, is_valid = validate_data_with_checklist(raw_df, file_info)
 
-def _has_blocking_issues(grouped_items):
-    blocking_sections = {"Open & analyze", "Features & prep"}
-    for title, items in grouped_items:
-        if title not in blocking_sections:
-            continue
-        for status, _ in items:
-            if status == "error":
-                return True
-    return False
-
-if _has_blocking_issues(pre_grouped):
-    _render_checklist(pre_grouped)
+if not is_valid:
+    _render_checklist(checklist_items)
     st.stop()
 
  
@@ -208,7 +188,7 @@ try:
         series_for_benchmark = series.iloc[: last_observed_idx + 1].dropna(subset=["y"]).copy()
         # Import config for default values
         try:
-            from utils.config import DEFAULT_TEST_FRACTION
+            from config import DEFAULT_TEST_FRACTION
         except ImportError:
             DEFAULT_TEST_FRACTION = 0.2
 
@@ -424,10 +404,7 @@ try:
 
         # Render checklist in sidebar grouped by module
         try:
-            file_info_local = locals().get('file_info', {})
-            raw_df_local = locals().get('raw_df', pd.DataFrame())
-            grouped = build_checklist_grouped(raw_df_local, file_info_local, series, load_meta, results, future_horizon or 0)
-            _render_checklist(grouped)
+            _render_checklist(checklist_items)
         except Exception:
             pass
 
@@ -482,4 +459,4 @@ try:
 
 except Exception:
     # Suppress main-screen error banners; checklist already provides feedback
-    _render_checklist(pre_grouped)
+    _render_checklist(checklist_items)

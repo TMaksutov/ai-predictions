@@ -12,21 +12,38 @@ A lightweight Streamlit app that benchmarks several fast regressors and a few cl
 - **Datasets**: CSVs with time (first), optional features (middle), target (last)
 - **UI**: One‑page layout with a results table and a simple forecast plot
 
+### Project layout recommendation
+
+- All helper modules live at the project root for quick navigation: `config.py`, `data_utils.py`, `plot_utils.py`.
+- There is no `utils/` package anymore. You can open any module directly without drilling into subfolders.
+
 ## How to run
 
-```bash
-pip install -r requirements.txt
-streamlit run streamlit_app.py
-```
-
-Then open `http://localhost:8501` in your browser.
-
-If `pip` or `streamlit` aren't on your PATH (especially on Windows), use:
+1) Install dependencies
 
 ```bash
 python -m pip install -r requirements.txt
-python -m streamlit run streamlit_app.py
 ```
+
+2) Start the app (recommended: bind to localhost and suppress first‑run email prompt)
+
+- Windows (PowerShell):
+
+```powershell
+$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; python -m streamlit run streamlit_app.py --server.address localhost --server.port 8501 --server.headless true
+```
+
+- macOS/Linux (bash/zsh):
+
+```bash
+STREAMLIT_BROWSER_GATHER_USAGE_STATS=false python -m streamlit run streamlit_app.py --server.address localhost --server.port 8501 --server.headless true
+```
+
+Then open `http://localhost:8501` in your browser. Stop with Ctrl+C.
+
+Notes:
+- If you prefer the default behavior, you can still run: `streamlit run streamlit_app.py`.
+- If `streamlit` is not on PATH, use `python -m streamlit` as shown above.
 
 You can upload your own CSV (time column first, target last), or just run with the bundled `sample.csv`.
 
@@ -37,7 +54,7 @@ Open the Cursor terminal at the project root and run:
 ```powershell
 & .\venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python -m streamlit run streamlit_app.py --server.port 8501 --server.address 127.0.0.1
+$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; python -m streamlit run streamlit_app.py --server.address localhost --server.port 8501 --server.headless true
 ```
 
 Then open `http://localhost:8501`.

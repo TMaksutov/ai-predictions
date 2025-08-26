@@ -31,7 +31,7 @@ from features import (
 
 # Import configuration
 try:
-    from utils.config import DEFAULT_TEST_FRACTION, MIN_TRAINING_ROWS
+    from config import DEFAULT_TEST_FRACTION, MIN_TRAINING_ROWS
 except ImportError:
     # Fallback values
     DEFAULT_TEST_FRACTION = 0.2

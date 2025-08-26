@@ -32,3 +32,5 @@ DEFAULT_PLOT_COLORS = {
     "prediction": "#d62728",
     "forecast": "orange"
 }
+
+

@@ -9,27 +9,13 @@ from datetime import datetime, date
 
 import pandas as pd
 from features import analyze_preprocessing
-try:
-    from utils.config import (
-        AUTO_DETECT_FOURIER,
-        AUTO_MAX_PERIOD,
-        AUTO_TOP_N,
-        AUTO_MIN_CYCLES,
-        FOURIER_PERIODS,
-        FOURIER_HARMONICS,
-    )
-except Exception:
-    AUTO_DETECT_FOURIER = True
-    AUTO_MAX_PERIOD = 400
-    AUTO_TOP_N = 3
-    AUTO_MIN_CYCLES = 3
-    FOURIER_PERIODS = [7, 30, 365]
-    FOURIER_HARMONICS = 3
-try:
-    from utils.seasonality import detect_seasonal_periods
-except Exception:
-    def detect_seasonal_periods(y, max_period: int = 400, top_n: int = 3, min_cycles: int = 3):
-        return []
+from data_utils import (
+    SUPPORTED_DATE_FORMATS,
+    detect_datetime_format,
+    _strip_whitespace_df,
+    _standardize_missing_tokens_df,
+    _normalize_dates_to_day,
+)
 
 
 def _normalize_trailing_separators(raw_bytes: bytes, sep_hint: Optional[str]) -> Tuple[bytes, Optional[str], dict]:
@@ -109,245 +95,472 @@ def _normalize_trailing_separators(raw_bytes: bytes, sep_hint: Optional[str]) ->
     except Exception:
         return raw_bytes, sep, {"lines_fixed": 0}
 
-def _detect_datetime_format(sample: List[str], max_samples: int = 200) -> Optional[str]:
-    """
-    Try a small set of common date formats and return the first format that parses
-    all non-empty samples without NaT. This avoids pandas element-wise parsing warnings.
-    """
+# Removed local duplicate: use utils.data_utils.detect_datetime_format
+
+# Removed local duplicate: use utils.data_utils._strip_whitespace_df
+
+# Removed local duplicate: use utils.data_utils._standardize_missing_tokens_df
+
+# Removed local duplicate: use utils.data_utils._normalize_dates_to_day
+
+def _infer_target_type(numeric_series: pd.Series) -> str:
+    """Return 'integer' if all values are integers within a small tolerance, else 'float'."""
+    # If any fractional part exists beyond tolerance, treat as float
     try:
-        formats = [
-            "%Y-%m-%d",
-            "%d/%m/%Y",
-            "%m/%d/%Y",
-            "%Y/%m/%d",
-            "%d-%m-%Y",
-            "%m-%d-%Y",
-            "%Y.%m.%d",
-        ]
-        # Take a subset of non-empty strings
-        vals: List[str] = [str(v).strip() for v in sample if str(v).strip()]
-        if not vals:
-            return None
-        vals = vals[:max_samples]
-        for fmt in formats:
+        tol = 1e-9
+        fractional = (numeric_series % 1).abs().gt(tol).any()
+        return "float" if fractional else "integer"
+    except Exception:
+        return "float"
+
+class DataLoader:
+    def __init__(self, file_obj_or_path):
+        self.file_obj_or_path = file_obj_or_path
+        self.info = {
+            "file_type": None, "size_mb": None, "separator": None,
+            "header_detected": None, "n_rows": None, "n_cols": None,
+            "error": None, "header_renamed_count": 0, "header_names": None,
+            "detected_date_format": None,
+        }
+        self.raw_bytes = None
+        self.buf_for_sniff = None
+
+    def execute(self):
+        try:
+            print("--- Starting Data Loading Process ---")
+            self._get_file_metadata()
+            self._validate_file()
+            self._read_and_normalize_content()
+            self._detect_delimiter()
+            df = self._read_csv()
+            df = self._detect_and_apply_header(df)
+            self._finalize_df_and_info(df)
+            print("--- Data Loading Process Finished Successfully ---")
+            return self.df, self.info
+        except ValueError as e:
+            self.info["error"] = str(e)
+            print(f"❌ ERROR: {e}")
+            return pd.DataFrame(), self.info
+
+    def _get_file_metadata(self):
+        print("➡️ Reading file metadata...")
+        name, size_bytes = None, None
+        is_file_like = hasattr(self.file_obj_or_path, "read") or hasattr(self.file_obj_or_path, "getvalue")
+        if is_file_like:
+            name = getattr(self.file_obj_or_path, "name", None)
+            size_bytes = getattr(self.file_obj_or_path, "size", None)
             try:
-                parsed = pd.to_datetime(vals, format=fmt, errors="coerce")
-                if parsed.notna().all():
-                    return fmt
+                if hasattr(self.file_obj_or_path, "getvalue"):
+                    self.buf_for_sniff = self.file_obj_or_path.getvalue()[:4096]
+                    self.raw_bytes = self.file_obj_or_path.getvalue()
+                else:
+                    self.buf_for_sniff = self.file_obj_or_path.read(4096)
+                    self.file_obj_or_path.seek(0)
+                    self.raw_bytes = self.file_obj_or_path.read()
+                self.file_obj_or_path.seek(0)
             except Exception:
-                continue
-        return None
-    except Exception:
-        return None
-
-def read_table_any(file_obj_or_path):
-    """
-    Read an uploaded file strictly as CSV with robust delimiter and header detection.
-
-    - Only CSV is accepted (Excel and other formats are rejected)
-    - Detect delimiter using csv.Sniffer with fallback heuristics
-    - Read with header=None first, then detect if the first row is a header and
-      adjust the DataFrame accordingly
-
-    Returns: (df, info)
-      df: pandas.DataFrame (data rows only; header row removed if detected)
-      info: dict with keys: file_type, size_mb, separator, header_detected, n_rows, n_cols, error
-    """
-    info = {
-        "file_type": None,
-        "size_mb": None,
-        "separator": None,
-        "header_detected": None,
-        "n_rows": None,
-        "n_cols": None,
-        "error": None,
-        # Extra header metadata for UI hints
-        "header_renamed_count": 0,
-        "header_names": None,
-    }
-
-    name = None
-    size_bytes = None
-    buf_for_sniff = None
-    raw_bytes = None
-    is_file_like = hasattr(file_obj_or_path, "read") or hasattr(file_obj_or_path, "getvalue")
-    if is_file_like:
-        name = getattr(file_obj_or_path, "name", None)
-        size_bytes = getattr(file_obj_or_path, "size", None)
-        # Read a small head sample without consuming the stream permanently
-        head_bytes = b""
-        try:
-            if hasattr(file_obj_or_path, "getvalue"):
-                head_bytes = file_obj_or_path.getvalue()[:4096]
-            else:
-                head_bytes = file_obj_or_path.read(4096)
-                try:
-                    file_obj_or_path.seek(0)
-                except Exception:
-                    pass
-        except Exception:
-            head_bytes = b""
-        buf_for_sniff = head_bytes
-        # Capture full bytes for normalization
-        try:
-            if hasattr(file_obj_or_path, "getvalue"):
-                raw_bytes = file_obj_or_path.getvalue()
-            else:
-                raw_bytes = file_obj_or_path.read()
-        except Exception:
-            raw_bytes = None
-        finally:
+                self.buf_for_sniff, self.raw_bytes = b"", None
+        else:
+            path_str = str(self.file_obj_or_path)
+            name = path_str
             try:
-                file_obj_or_path.seek(0)
+                size_bytes = os.path.getsize(path_str)
+                with open(path_str, "rb") as f:
+                    self.buf_for_sniff = f.read(4096)
+                with open(path_str, "rb") as f:
+                    self.raw_bytes = f.read()
             except Exception:
-                pass
-    else:
-        # Treat as path-like
-        path_str = str(file_obj_or_path)
-        name = path_str
-        try:
-            size_bytes = os.path.getsize(path_str)
-        except Exception:
-            size_bytes = None
-        try:
-            with open(path_str, "rb") as f:
-                buf_for_sniff = f.read(4096)
-            with open(path_str, "rb") as f:
-                raw_bytes = f.read()
-        except Exception:
-            buf_for_sniff = b""
-            raw_bytes = None
+                size_bytes, self.buf_for_sniff, self.raw_bytes = None, b"", None
+        
+        self.ext = (Path(name).suffix or "").lower() if name else ""
+        self.info["file_type"] = (self.ext.replace(".", "") or "unknown")
+        self.info["size_mb"] = (size_bytes / (1024 * 1024)) if size_bytes is not None else None
+        print("✅ File metadata read.")
 
-    ext = (Path(name).suffix or "").lower() if name else ""
-    info["file_type"] = (ext.replace(".", "") or "unknown")
-    info["size_mb"] = (size_bytes / (1024 * 1024)) if size_bytes is not None else None
+    def _validate_file(self):
+        print("➡️ Validating file type and size...")
+        if self.info["size_mb"] is not None and self.info["size_mb"] > 10.0:
+            raise ValueError("File larger than 10 MB")
+        if self.ext not in [".csv", "csv", ""]:
+            raise ValueError("Only CSV files are accepted")
+        print("✅ File type and size are valid.")
 
-    if info["size_mb"] is not None and info["size_mb"] > 10.0:
-        info["error"] = "File larger than 10 MB"
-        return pd.DataFrame(), info
-
-    # We only accept CSV according to the new rules
-    if ext not in [".csv", "csv", ""]:
-        info["error"] = "Only CSV files are accepted"
-        return pd.DataFrame(), info
-
-    # Detect delimiter
-    detected_sep = None
-    try:
-        sample_text = (buf_for_sniff or b"").decode(errors="ignore")
-        if sample_text:
-            sniffer = csv.Sniffer()
-            dialect = sniffer.sniff(sample_text, delimiters=[",", ";", "\t", "|"])
-            detected_sep = dialect.delimiter
-    except Exception:
-        line = sample_text.splitlines()[0] if sample_text else ""
-        for cand in [",", ";", "\t", "|"]:
-            if cand in line:
-                detected_sep = cand
-                break
-    info["separator"] = detected_sep or "auto"
-
-    # Prepare a BytesIO target, normalizing trailing separators if needed
-    if raw_bytes is None:
-        read_target = file_obj_or_path
-    else:
-        normalized_bytes, _, norm_stats = _normalize_trailing_separators(
-            raw_bytes if isinstance(raw_bytes, (bytes, bytearray)) else bytes(str(raw_bytes), "utf-8"),
-            detected_sep,
-        )
-        read_target = io.BytesIO(normalized_bytes)
-        # Surface normalization stats to info after it's created
-
-    # Read with header=None first; we will detect header manually
-    normalization_lines_fixed = 0
-    try:
-        if detected_sep is None:
-            raw_df = pd.read_csv(read_target, sep=None, engine="python", header=None, dtype=str)
+    def _read_and_normalize_content(self):
+        print("➡️ Normalizing CSV content...")
+        if self.raw_bytes is not None:
+            normalized_bytes, _, norm_stats = _normalize_trailing_separators(
+                self.raw_bytes, self.info["separator"]
+            )
+            self.read_target = io.BytesIO(normalized_bytes)
+            self.info["trailing_separator_lines_fixed"] = norm_stats.get("lines_fixed", 0)
+            print(f"✅ Content normalized. Lines fixed: {self.info['trailing_separator_lines_fixed']}")
         else:
-            raw_df = pd.read_csv(read_target, sep=detected_sep, engine="python", header=None, dtype=str)
-    except Exception as e:
-        info["error"] = f"Read failed: {e}"
-        return pd.DataFrame(), info
+            self.read_target = self.file_obj_or_path
+            print("✅ Content will be read directly (no in-memory normalization).")
 
-    # Header detection: if the first cell cannot be parsed as date but almost all following cells in first column can,
-    # assume the first row is header
-    header_detected = False
-    try:
-        first_col = raw_df.iloc[:, 0]
-        fmt = _detect_datetime_format(first_col.astype(str).tolist())
-        if fmt:
-            parsed_all = pd.to_datetime(first_col, errors="coerce", format=fmt)
-        else:
-            # Use mixed parsing (pandas >=2.0) to avoid element-wise warnings
-            parsed_all = pd.to_datetime(first_col, errors="coerce", format="mixed")
-        if len(parsed_all) >= 2:
-            first_is_not_date = pd.isna(parsed_all.iloc[0])
-            after_ratio = parsed_all.iloc[1:].notna().mean() if len(parsed_all) > 1 else 0.0
-            if first_is_not_date and after_ratio >= 0.95:
-                header_detected = True
-    except Exception:
+    def _detect_delimiter(self):
+        print("➡️ Detecting CSV delimiter...")
+        detected_sep = None
+        try:
+            sample_text = (self.buf_for_sniff or b"").decode(errors="ignore")
+            if sample_text:
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(sample_text, delimiters=[",", ";", "\t", "|"])
+                detected_sep = dialect.delimiter
+        except Exception:
+            line = sample_text.splitlines()[0] if sample_text else ""
+            for cand in [",", ";", "\t", "|"]:
+                if cand in line:
+                    detected_sep = cand
+                    break
+        self.info["separator"] = detected_sep
+        print(f"✅ Delimiter detected: '{detected_sep}'")
+
+    def _read_csv(self):
+        print("➡️ Reading CSV data into DataFrame...")
+        try:
+            engine = "python"
+            raw_df = pd.read_csv(
+                self.read_target, 
+                sep=self.info["separator"], 
+                engine=engine, 
+                header=None, 
+                dtype=str
+            )
+            print("✅ CSV data read successfully.")
+            return raw_df
+        except Exception as e:
+            raise ValueError(f"Failed to read CSV: {e}")
+
+    def _detect_and_apply_header(self, raw_df):
+        print("➡️ Detecting header row (daily sequence check)...")
         header_detected = False
+        df = raw_df.copy()
 
-    if header_detected:
-        # Use the first row as header names; drop it from data
-        header_row = raw_df.iloc[0].tolist()
-        df = raw_df.iloc[1:].copy().reset_index(drop=True)
+        def _detect_daily_format_on_values(values):
+            # Check rows 2..end (index 1..end) for strict daily increments
+            tail_vals = [str(v).strip() for v in values[1:]]
+            if len(tail_vals) < 1:
+                return None
+            for fmt in SUPPORTED_DATE_FORMATS:
+                try:
+                    parsed_tail = pd.to_datetime(tail_vals, format=fmt, errors="coerce").dt.normalize()
+                except Exception:
+                    continue
+                if parsed_tail.isna().any():
+                    continue
+                diffs = parsed_tail.diff().dropna()
+                if not diffs.empty and (diffs == pd.Timedelta(days=1)).all():
+                    return fmt
+            return None
+
         try:
-            # Ensure unique string column names
-            dedup = []
-            seen = set()
+            first_col_vals = df.iloc[:, 0].astype(str).tolist()
+            fmt = _detect_daily_format_on_values(first_col_vals)
+            self.info["detected_date_format"] = fmt
+
+            if fmt is None:
+                print("⚠️ Could not confirm daily date format from rows 2..end.")
+                header_detected = False
+            else:
+                # With a confirmed daily format on rows 2..end, decide if row 1 is a header
+                if len(first_col_vals) >= 2:
+                    second_dt = pd.to_datetime(first_col_vals[1], format=fmt, errors="coerce")
+                    first_dt = pd.to_datetime(first_col_vals[0], format=fmt, errors="coerce")
+                    if pd.isna(first_dt) or pd.isna(second_dt) or (first_dt.normalize() != (second_dt.normalize() - pd.Timedelta(days=1))):
+                        header_detected = True
+                    else:
+                        header_detected = False
+                else:
+                    header_detected = False
+        except Exception:
+            header_detected = False
+
+        self.info["header_detected"] = header_detected
+        if header_detected:
+            print("✅ Header row detected.")
+            header_row = df.iloc[0].tolist()
+            df = df.iloc[1:].copy().reset_index(drop=True)
+            self._apply_header_names(df, header_row)
+        else:
+            # No header present: assign semantic names: date, feature_*, target
+            print("✅ No header row detected. Assigning default names: date, feature_*, target.")
+            ncols = int(df.shape[1])
+            names = []
+            if ncols >= 1:
+                names.append("date")
+            if ncols >= 3:
+                for i in range(1, ncols - 1):
+                    names.append(f"feature_{i}")
+            if ncols >= 2:
+                names.append("target")
+            if len(names) != ncols:
+                names = [f"col_{i+1}"] * ncols
+            df.columns = names
+            self.info["header_names"] = df.columns.tolist()
+        return df
+
+    def _apply_header_names(self, df, header_row):
+        print("➡️ Applying header names...")
+        try:
+            dedup, seen = [], set()
             for idx, val in enumerate(header_row):
                 name = str(val).strip() if (val is not None and str(val).strip() != "") else f"col_{idx+1}"
                 if name in seen:
-                    k = 2
+                    k=2
                     new_name = f"{name}_{k}"
                     while new_name in seen:
-                        k += 1
+                        k+=1
                         new_name = f"{name}_{k}"
                     name = new_name
                 seen.add(name)
                 dedup.append(name)
             df.columns = dedup
-            # Track if any renames were needed compared to original header strings (after strip)
             original = [str(v).strip() if v is not None else "" for v in header_row]
-            info["header_renamed_count"] = sum(1 for a, b in zip(original, dedup) if a != b)
-            info["header_names"] = dedup
+            self.info["header_renamed_count"] = sum(1 for a, b in zip(original, dedup) if a != b)
+            self.info["header_names"] = dedup
+            print("✅ Header names applied.")
         except Exception:
-            # Fallback to default names if anything goes wrong
             df.columns = [f"col_{i+1}" for i in range(df.shape[1])]
-            info["header_renamed_count"] = 0
-            info["header_names"] = df.columns.tolist()
-    else:
-        # No header line; assign generic names
-        df = raw_df.copy()
-        df.columns = [f"col_{i+1}" for i in range(df.shape[1])]
-        info["header_renamed_count"] = 0
-        info["header_names"] = df.columns.tolist()
+            self.info["header_names"] = df.columns.tolist()
+            print("⚠️ Could not apply header names, using generic ones.")
 
-    info["header_detected"] = bool(header_detected)
-    info["n_rows"], info["n_cols"] = int(df.shape[0]), int(df.shape[1])
-    # Attach normalization stats if available
-    try:
-        info["trailing_separator_lines_fixed"] = norm_stats.get("lines_fixed", 0)  # type: ignore[name-defined]
-    except Exception:
-        info["trailing_separator_lines_fixed"] = 0
+    def _finalize_df_and_info(self, df):
+        print("➡️ Finalizing DataFrame and metadata...")
+        self.df = df
+        self.info["n_rows"], self.info["n_cols"] = int(df.shape[0]), int(df.shape[1])
+        try:
+            last_col_series = df.iloc[:, -1]
+            isna = pd.to_numeric(last_col_series, errors="coerce").isna()
+            trailing_blank = 0
+            for val in reversed(isna.tolist()):
+                if val: trailing_blank += 1
+                else: break
+            self.info["trailing_blank_last_col_rows"] = int(trailing_blank)
+        except Exception:
+            self.info["trailing_blank_last_col_rows"] = None
+        print("✅ DataFrame and metadata finalized.")
 
-    # Detect trailing blank last-column region for user visibility
-    try:
-        last_col_series = df.iloc[:, -1]
-        isna = pd.to_numeric(last_col_series, errors="coerce").isna()
-        # Allow blank only at the end; compute consecutive blanks from end
-        trailing_blank = 0
-        for val in reversed(isna.tolist()):
-            if val:
-                trailing_blank += 1
+def load_data_with_checklist(file_obj_or_path):
+    return DataLoader(file_obj_or_path).execute()
+
+class DataValidator:
+    def __init__(self, df, file_info):
+        self.df_orig = df
+        self.file_info = file_info
+        self.checklist = []
+
+    def execute(self):
+        try:
+            print("\n--- Starting Data Validation Process ---")
+            if self.file_info.get("error"):
+                raise ValueError(f"Cannot validate due to loading error: {self.file_info.get('error')}")
+
+            self._check_dimensions()
+            self._normalize_data()
+            self._validate_columns()
+            self._validate_missing_values()
+            self._validate_date_sequence()
+            self._perform_guidance_checks()
+            self._analyze_features_and_seasonality()
+            print("--- Data Validation Process Finished Successfully ---")
+            return self.checklist, True
+        except ValueError as e:
+            print(f"❌ ERROR: {e}")
+            self.checklist.append(("error", str(e)))
+            return self.checklist, False
+
+    def _add_check(self, text, status="ok"):
+        if status == "error":
+            raise ValueError(text)
+        elif status == "warn":
+            print(f"⚠️ {text}")
+        else:
+            print(f"✅ {text}")
+        self.checklist.append((status, text))
+
+    def _check_dimensions(self):
+        print("\n➡️ Checking data dimensions...")
+        n, c = self.file_info.get("n_rows"), self.file_info.get("n_cols")
+        if c is None or c < 2:
+            self._add_check("Column count: must be at least 2 (date + target)", "error")
+        self._add_check(f"Column count: {c} (>=2)")
+        if n is None or n < 10:
+            self._add_check("Row count: must be at least 10 data rows", "error")
+        self._add_check(f"Row count: {n} (>=10)")
+
+    def _normalize_data(self):
+        print("\n➡️ Normalizing data for validation...")
+        self.df_norm = _strip_whitespace_df(self.df_orig)
+        self.df_norm = _standardize_missing_tokens_df(self.df_norm)
+        print("✅ Data normalized (whitespace, missing tokens).")
+
+    def _validate_columns(self):
+        print("\n➡️ Validating date and target columns...")
+        # Date column
+        self.parsed_dates = None
+        if not self.df_norm.empty:
+            try:
+                col_vals_all = self.df_norm.iloc[:, 0].astype(str).tolist()
+                detected_fmt = self.file_info.get("detected_date_format")
+                # Fallback: if no format saved yet, detect on entire column now
+                if not detected_fmt:
+                    detected_now = detect_datetime_format(col_vals_all)
+                    if detected_now:
+                        self.file_info["detected_date_format"] = detected_now
+                        detected_fmt = detected_now
+                parsed = _normalize_dates_to_day(self.df_norm.iloc[:, 0], date_format=detected_fmt)
+                ok_ratio = parsed.notna().mean()
+                if ok_ratio >= 0.95:
+                    self.parsed_dates = parsed
+                else:
+                    # Try mixed parsing without a fixed format
+                    parsed_mixed = _normalize_dates_to_day(self.df_norm.iloc[:, 0], date_format=None)
+                    if parsed_mixed.notna().mean() >= 0.95:
+                        self.parsed_dates = parsed_mixed
+                    else:
+                        # Try re-detecting on non-empty unique values only
+                        non_empty_vals = [v for v in col_vals_all if str(v).strip()]
+                        detected_retry = detect_datetime_format(non_empty_vals)
+                        if detected_retry:
+                            self.file_info["detected_date_format"] = detected_retry
+                            parsed_retry = _normalize_dates_to_day(self.df_norm.iloc[:, 0], date_format=detected_retry)
+                            if parsed_retry.notna().mean() >= 0.95:
+                                self.parsed_dates = parsed_retry
+            except Exception: pass
+        if self.parsed_dates is None:
+            self._add_check("First column must be valid dates", "error")
+        self._add_check("First column is valid date")
+
+        # Target column (robust numeric check)
+        self.numeric_series, self.last_observed_idx, target_type = None, None, None
+        if not self.df_norm.empty and self.df_norm.shape[1] >= 2:
+            try:
+                last_col = self.df_norm.iloc[:, -1]
+                nums_full = pd.to_numeric(last_col, errors="coerce")
+                self.numeric_series = nums_full
+                non_missing_mask = nums_full.notna()
+                valid_ratio_overall = float(non_missing_mask.mean()) if len(nums_full) > 0 else 0.0
+                if non_missing_mask.any():
+                    self.last_observed_idx = int(non_missing_mask[non_missing_mask].index.max())
+                    historical_values = nums_full.loc[:self.last_observed_idx]
+                    if len(historical_values) > 0:
+                        hist_valid_ratio = float(historical_values.notna().mean())
+                        # Accept if the known region is mostly numeric
+                        if hist_valid_ratio >= 0.95:
+                            target_type = _infer_target_type(historical_values.dropna())
+                # As a fallback, accept if overall numeric ratio is high enough
+                if target_type is None and valid_ratio_overall >= 0.95:
+                    target_type = _infer_target_type(nums_full.dropna())
+            except Exception:
+                target_type = None
+
+        if target_type is None:
+            self._add_check("Last column must be numeric", "error")
+        self._add_check(f"Last column is numeric (target type: {target_type})")
+
+    def _validate_missing_values(self):
+        print("\n➡️ Checking for missing values...")
+        try:
+            isna_df = self.df_norm.isna()
+            known_region_ok = False
+            if self.last_observed_idx is not None:
+                known_region_ok = not isna_df.loc[:self.last_observed_idx, :].any().any()
+            if not known_region_ok:
+                self._add_check("No missing/blank values in any column (known region)", "error")
+            self._add_check("No missing/blank values in known region.")
+        except Exception:
+            self._add_check("Missing value check failed", "error")
+
+    def _validate_date_sequence(self):
+        print("\n➡️ Validating date sequence...")
+        if self.parsed_dates is not None:
+            # Use only valid dates for ordering/continuity checks
+            valid_dates = self.parsed_dates.dropna()
+
+            # Check for duplicates (consider only valid dates)
+            if not valid_dates.is_unique:
+                duplicates = valid_dates[valid_dates.duplicated()].dt.strftime('%Y-%m-%d').tolist()
+                self._add_check(f"Dates must be unique. Found duplicates for: {', '.join(duplicates)}", "error")
+            self._add_check("Dates are unique.")
+
+            # Check for ascending order
+            if not valid_dates.is_monotonic_increasing:
+                # Find the first negative diff among valid dates, if any
+                diffs = valid_dates.diff()
+                neg = diffs[diffs < pd.Timedelta(days=0)]
+                if not neg.empty:
+                    violation_idx = neg.index[0]
+                    prev_idx = valid_dates.index.get_loc(violation_idx) - 1
+                    if prev_idx >= 0:
+                        # Map to actual dates for message
+                        prev_date = valid_dates.iloc[prev_idx].strftime('%Y-%m-%d')
+                        curr_date = valid_dates.loc[violation_idx].strftime('%Y-%m-%d')
+                        self._add_check(f"Dates must be in ascending order. Violation at index {violation_idx}: '{curr_date}' follows '{prev_date}'", "error")
+                    else:
+                        self._add_check("Dates must be in ascending order.", "error")
+                else:
+                    # Non-monotonic but no negative diffs likely due to missing/NaT; flag ordering error generically
+                    self._add_check("Dates must be in ascending order (ignoring blanks)", "error")
+            self._add_check("Dates are in ascending order.")
+            
+            diffs = valid_dates.diff().dropna()
+            if not diffs.empty and not (diffs == pd.Timedelta(days=1)).all():
+                self._add_check("Daily continuity (each day present)", "error")
+            self._add_check("Daily continuity is valid.")
+        else:
+            self._add_check("Date sequence validation skipped (invalid date column)", "error")
+
+    def _perform_guidance_checks(self):
+        print("\n➡️ Performing optional guidance checks...")
+        if self.file_info.get("header_detected") and isinstance(self.file_info.get("header_names"), list):
+            first_name = str(self.file_info["header_names"][0]).lower()
+            looks_like_date = any(tok in first_name for tok in ["date", "day", "time"])
+            self._add_check("Header: first column name looks like a date", "ok" if looks_like_date else "warn")
+        if self.numeric_series is not None:
+            nunique = int(pd.Series(self.numeric_series).nunique(dropna=True))
+            self._add_check(f"Target variability: unique values={nunique}", "ok" if nunique > 1 else "warn")
+
+    def _analyze_features_and_seasonality(self):
+        print("\n➡️ Analyzing features and seasonality...")
+        c = self.file_info.get("n_cols")
+        feature_cols = []
+        if c and c > 2:
+            feature_cols = list(self.df_norm.columns[1:-1])
+            self._add_check(f"Intermediate feature columns accepted: {len(feature_cols)}")
+        else:
+            self._add_check("No intermediate feature columns.")
+
+        num_future_rows = 0
+        if self.last_observed_idx is not None and self.last_observed_idx < len(self.df_norm) - 1:
+            num_future_rows = int(len(self.df_norm) - (self.last_observed_idx + 1))
+        
+        if num_future_rows == 0:
+            self._add_check("Future rows provided: 0 (required for prediction)", "error")
+        self._add_check(f"Future rows provided: {num_future_rows}")
+
+        try:
+            series_for_analysis = self.df_orig.rename(columns={self.df_orig.columns[0]: 'ds', self.df_orig.columns[-1]: 'y'})
+            detected_fmt = self.file_info.get("detected_date_format")
+            series_for_analysis['ds'] = _normalize_dates_to_day(series_for_analysis['ds'], date_format=detected_fmt)
+            series_for_analysis = series_for_analysis.dropna(subset=['ds'])
+            # Ensure numeric target and restrict to known values for analysis
+            series_for_analysis['y'] = pd.to_numeric(series_for_analysis['y'], errors='coerce')
+            series_for_analysis = series_for_analysis.dropna(subset=['y'])
+            if series_for_analysis.empty:
+                self._add_check("No strong seasonal periods detected", "warn")
+                return
+            info = analyze_preprocessing(series_for_analysis)
+            detected_periods = [int(p) for p in info.get("fourier_periods_detected", []) if int(p) > 1]
+            if detected_periods:
+                self._add_check(f"Detected seasonal periods: {detected_periods}")
             else:
-                break
-        info["trailing_blank_last_col_rows"] = int(trailing_blank)
-    except Exception:
-        info["trailing_blank_last_col_rows"] = None
+                self._add_check("No strong seasonal periods detected", "warn")
+        except Exception as e:
+            self._add_check(f"Seasonality analysis failed: {e}", "warn")
 
-    return df, info
+def validate_data_with_checklist(df, file_info):
+    return DataValidator(df, file_info).execute()
 
 
 def detect_roles(df: pd.DataFrame):
@@ -396,62 +609,11 @@ def daily_integrity_status(df: pd.DataFrame, ts_col: str):
  
 
 
-def _is_numeric_series(series: pd.Series) -> Tuple[bool, Optional[pd.Series]]:
-    """Return (is_numeric, numeric_series_or_none). Accepts ints or floats, rejects non-numeric."""
-    try:
-        numeric = pd.to_numeric(series, errors="coerce")
-        if numeric.notna().all():
-            return True, numeric
-        return False, None
-    except Exception:
-        return False, None
-
-
-def _infer_target_type(numeric_series: pd.Series) -> str:
-    """Return 'integer' if all values are integers within a small tolerance, else 'float'."""
-    # If any fractional part exists beyond tolerance, treat as float
-    try:
-        tol = 1e-9
-        fractional = (numeric_series % 1).abs().gt(tol).any()
-        return "float" if fractional else "integer"
-    except Exception:
-        return "float"
-
-
-def _strip_whitespace_df(df: pd.DataFrame) -> pd.DataFrame:
-    try:
-        out = df.copy()
-        for col in out.columns:
-            if out[col].dtype == object:
-                out[col] = out[col].astype(str).map(lambda x: x.strip())
-        return out
-    except Exception:
-        return df
-
-
-def _standardize_missing_tokens_df(df: pd.DataFrame) -> pd.DataFrame:
-    tokens = {"", "na", "n/a", "nan", "null", "none", "-", "?", "—"}
-    out = df.copy()
-    try:
-        for col in out.columns:
-            if out[col].dtype == object:
-                out[col] = out[col].astype(str)
-                out[col] = out[col].map(lambda x: pd.NA if x.strip().lower() in tokens else x)
-        return out
-    except Exception:
-        return df
-
-
-def _normalize_dates_to_day(series: pd.Series) -> pd.Series:
-    try:
-        try:
-            parsed = pd.to_datetime(series, errors="coerce", format="mixed")
-        except Exception:
-            parsed = pd.to_datetime(series, errors="coerce")
-        # Normalize to midnight to ensure day-wise diffs
-        return parsed.dt.normalize()
-    except Exception:
-        return pd.to_datetime([pd.NA] * len(series), errors="coerce")
+"""
+Removed duplicate helper functions that shadowed imports from utils.data_utils
+(_is_numeric_series, _infer_target_type, _strip_whitespace_df, _standardize_missing_tokens_df,
+_normalize_dates_to_day).
+"""
 
 
 def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.DataFrame, load_meta: dict, results: List[dict], future_horizon: int):
@@ -521,7 +683,8 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     parsed_dates: Optional[pd.Series] = None
     if not df_norm.empty and df_norm.shape[1] >= 1:
         try:
-            parsed = _normalize_dates_to_day(df_norm.iloc[:, 0])
+            detected_fmt = file_info.get("detected_date_format")
+            parsed = _normalize_dates_to_day(df_norm.iloc[:, 0], date_format=detected_fmt)
             if parsed.notna().all():
                 date_ok = True
                 parsed_dates = parsed
@@ -637,33 +800,30 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     else:
         add("Features & prep", "Future rows provided: 0 (required)", "error")
 
-    # Seasonality insight (non-blocking)
-    try:
-        fixed_periods = list(dict.fromkeys(int(p) for p in FOURIER_PERIODS if int(p) > 1))
-    except Exception:
-        fixed_periods = [7, 30, 365]
-
+    # Seasonality insight (non-blocking) delegated to features.analyze_preprocessing
+    fixed_periods: List[int] = []
     detected_periods: List[int] = []
+    fourier_harmonics = None
     try:
-        if AUTO_DETECT_FOURIER and isinstance(series, pd.DataFrame) and not series.empty and "y" in series.columns:
-            y_series = pd.to_numeric(series["y"], errors="coerce").dropna()
-            if len(y_series) >= max(10, 2):
-                detected_periods = detect_seasonal_periods(
-                    y_series.to_numpy(),
-                    max_period=int(AUTO_MAX_PERIOD),
-                    top_n=int(AUTO_TOP_N),
-                    min_cycles=int(AUTO_MIN_CYCLES),
-                ) or []
-                detected_periods = [int(p) for p in detected_periods if int(p) > 1]
+        if isinstance(series, pd.DataFrame) and not series.empty:
+            info = analyze_preprocessing(series)
+            fixed_periods = [int(p) for p in info.get("fourier_periods_fixed", []) if int(p) > 1]
+            detected_periods = [int(p) for p in info.get("fourier_periods_detected", []) if int(p) > 1]
+            fourier_harmonics = info.get("fourier_harmonics", None)
     except Exception:
+        fixed_periods = []
         detected_periods = []
+        fourier_harmonics = None
 
     if fixed_periods:
-        groups["Seasonality"].append(("ok", f"Fixed Fourier periods configured: {fixed_periods}; harmonics={FOURIER_HARMONICS}"))
+        if fourier_harmonics is not None:
+            groups["Seasonality"].append(("ok", f"Fixed Fourier periods configured: {fixed_periods}; harmonics={fourier_harmonics}"))
+        else:
+            groups["Seasonality"].append(("ok", f"Fixed Fourier periods configured: {fixed_periods}"))
     if detected_periods:
-        groups["Seasonality"].append(("ok", f"Detected periods (top {AUTO_TOP_N}, <= {AUTO_MAX_PERIOD} days): {detected_periods}"))
+        groups["Seasonality"].append(("ok", f"Detected periods: {detected_periods}"))
     else:
-        groups["Seasonality"].append(("warn", f"No strong long periods detected (<= {AUTO_MAX_PERIOD} days), weekly-only may apply"))
+        groups["Seasonality"].append(("warn", "No strong seasonal periods detected"))
 
     # Final summary
     final_error = any(status == "error" for _, items in groups.items() for status, _ in items)

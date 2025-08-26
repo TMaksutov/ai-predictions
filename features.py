@@ -6,7 +6,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 
 # Import configuration
 try:
-    from utils.config import (
+    from config import (
         LAG_PERIODS,
         MOVING_AVERAGE_WINDOWS,
         FOURIER_PERIODS,

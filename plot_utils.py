@@ -207,3 +207,5 @@ def create_results_table(results: list, metric_name: str = "RMSE"):
 
     table_df = pd.DataFrame(table_rows).sort_values(metric_name).reset_index(drop=True)
     return table_df
+
+
