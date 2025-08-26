@@ -633,9 +633,14 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
         "Open & analyze": [],
         "Features & prep": [],
         "Seasonality": [],
+        # Keep for backward-compatibility with callers that expect this key
+        "Model & predict": [],
     }
 
     def add(group: str, text: str, status: str):
+        # Tolerate unknown groups by creating them on the fly
+        if group not in groups:
+            groups[group] = []
         groups[group].append((status, text))
 
     # Overview
@@ -655,9 +660,9 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     if file_info.get("error"):
         add("Open & analyze", f"Readable as CSV: {file_info.get('error')}", "error")
         ordered = [
-            ("Open & analyze", groups["Open & analyze"]),
-            ("Features & prep", groups["Features & prep"]),
-            ("Model & predict", groups["Model & predict"]),
+            ("Open & analyze", groups.get("Open & analyze", [])),
+            ("Features & prep", groups.get("Features & prep", [])),
+            ("Seasonality", groups.get("Seasonality", [])),
         ]
         return ordered
 
@@ -831,8 +836,9 @@ def build_checklist_grouped(df_any: pd.DataFrame, file_info: dict, series: pd.Da
     add("Seasonality", summary, "error" if final_error else "ok")
 
     ordered = [
-        ("Open & analyze", groups["Open & analyze"]),
-        ("Features & prep", groups["Features & prep"]),
+        ("Open & analyze", groups.get("Open & analyze", [])),
+        ("Features & prep", groups.get("Features & prep", [])),
+        ("Seasonality", groups.get("Seasonality", [])),
     ]
     return ordered
 
