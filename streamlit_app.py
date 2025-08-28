@@ -396,7 +396,7 @@ try:
             with table_container:
                 edited_df = st.data_editor(
                     results_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={
                         "Show": st.column_config.CheckboxColumn(
@@ -528,7 +528,7 @@ try:
             try:
                 features_df, feature_cols = _build_features(series)
                 st.markdown("#### Training/prediction data (first 5 rows)")
-                st.dataframe(features_df.head(5), use_container_width=True)
+                st.dataframe(features_df.head(5), width='stretch')
             except Exception as e:
                 st.warning(f"Could not build features preview: {e}")
 
