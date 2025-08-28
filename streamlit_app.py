@@ -13,6 +13,8 @@ import uuid
 import json
 import os
 from urllib import request
+import warnings
+from sklearn.exceptions import ConvergenceWarning
 
 st.set_page_config(
     page_title="Daily Data Forecast",
@@ -20,6 +22,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Suppress noisy optimization convergence warnings from scikit-learn in UI
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 # Enforce a wider sidebar
 st.markdown(

@@ -84,7 +84,7 @@ def _seed_default_models_if_empty() -> None:
         "Huber (epsilon=1.35)",
         lambda: Pipeline([
             ("scaler", StandardScaler()),
-            ("model", HuberRegressor(epsilon=1.35, max_iter=800, tol=1e-4)),
+            ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4)),
         ]),
     )
 
