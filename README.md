@@ -29,8 +29,17 @@ python -m pip install -r requirements.txt
 
 - Windows (PowerShell):
 
+Option A — use the venv's Python directly (no activation required):
+
 ```powershell
-$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; python -m streamlit run streamlit_app.py --server.address localhost --server.port 8501 --server.headless true
+$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; .\venv\Scripts\python.exe -m streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+```
+
+Option B — if you prefer to activate the venv first:
+
+```powershell
+& .\venv\Scripts\Activate.ps1
+$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; python -m streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
 ```
 
 - macOS/Linux (bash/zsh):
@@ -52,12 +61,21 @@ You can upload your own CSV (time column first, target last), or just run with t
 Open the Cursor terminal at the project root and run:
 
 ```powershell
-& .\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; python -m streamlit run streamlit_app.py --server.address localhost --server.port 8501 --server.headless true
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"; .\venv\Scripts\python.exe -m streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
 ```
 
 Then open `http://localhost:8501`.
+
+### Troubleshooting
+
+- If `http://localhost:8501` doesn’t load, try changing the port:
+
+```powershell
+.\n+\venv\Scripts\python.exe -m streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8502 --server.headless true
+```
+
+- On Windows PowerShell, avoid piping Streamlit output to `| cat` — it can cause errors. Run the command directly as shown above.
 
 ## Data format and workflow
 

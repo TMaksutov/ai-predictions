@@ -272,12 +272,30 @@ class UnifiedTimeSeriesTrainer:
                     rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
                     # Compute MAPE (relative, e.g., 0.05 == 5%) for information only
                     try:
-                        mape = float(mean_absolute_percentage_error(y_test_arr, preds_arr))
+                        # Safe MAPE: ignore zero targets and clamp huge ratios
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            abs_err = np.abs(y_test_arr - preds_arr)
+                            denom = np.abs(y_test_arr)
+                            mask = denom > 1e-12
+                            ratios = np.zeros_like(abs_err, dtype=float)
+                            ratios[mask] = abs_err[mask] / denom[mask]
+                            mape = float(np.nanmean(ratios)) if np.any(mask) else None
                     except Exception:
                         mape = None
+                    # Compute sMAPE (symmetric MAPE) in [0, 2]
+                    try:
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            denom2 = (np.abs(y_test_arr) + np.abs(preds_arr))
+                            mask2 = denom2 > 1e-12
+                            smape_vals = np.zeros_like(y_test_arr, dtype=float)
+                            smape_vals[mask2] = (2.0 * np.abs(preds_arr[mask2] - y_test_arr[mask2])) / denom2[mask2]
+                            smape = float(np.nanmean(smape_vals)) if np.any(mask2) else None
+                    except Exception:
+                        smape = None
                 else:
                     rmse = float("inf")
                     mape = None
+                    smape = None
 
                 forecast_df = pd.DataFrame({
                     "ds": test_ds_vals,
@@ -293,6 +311,7 @@ class UnifiedTimeSeriesTrainer:
                     "name": name,
                     "rmse": rmse,
                     "mape": mape,
+                    "smape": smape,
                     "forecast_df": forecast_df,
                     "test_df": test_df,
                     "train_time_s": train_time_s,
@@ -305,6 +324,7 @@ class UnifiedTimeSeriesTrainer:
                     "name": name,
                     "rmse": float("inf"),
                     "mape": None,
+                    "smape": None,
                     "forecast_df": pd.DataFrame(),
                     "test_df": pd.DataFrame(),
                     "train_time_s": None,

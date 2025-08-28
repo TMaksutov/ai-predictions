@@ -62,17 +62,24 @@ def prepare_series_from_dataframe(raw_df: pd.DataFrame, file_info: dict):
         ds_parsed = ds_parsed.dt.normalize()
     except Exception:
         pass
+    # Avoid duplicate 'ds' column if source already has one
+    if "ds" in series.columns:
+        try:
+            series.drop(columns=["ds"], inplace=True)
+        except Exception:
+            pass
     series.insert(0, "ds", ds_parsed)
+    # Assign/overwrite standardized target column
     series["y"] = pd.to_numeric(target_values, errors="coerce")
-    # Drop original date/target columns if they still exist by name
+    # Drop original date/target columns if present, but keep standardized names
     try:
-        if first in series.columns:
+        if first in series.columns and first != "ds":
             series.drop(columns=[first], inplace=True)
     except Exception:
         pass
     try:
-        # Avoid double-dropping if first==last (single-column edge case)
-        if last in series.columns and last != first:
+        # Avoid double-dropping and do not drop the standardized 'y'
+        if last in series.columns and last != first and last != "y":
             series.drop(columns=[last], inplace=True)
     except Exception:
         pass

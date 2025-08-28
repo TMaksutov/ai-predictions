@@ -133,10 +133,10 @@ def _pick_top_unique_models(results: list, max_models: int = 3) -> list:
  # -----------------------------
 # Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
-    "Upload a CSV (date column first, target last)",
-    type=["csv"],
+    "Upload a CSV or Excel file (date column first, target last, 10MB max)",
+    type=["csv", "xlsx", "xls"],
     accept_multiple_files=False,
-    help="If no file is uploaded, the default dataset 'sample.csv' will be used."
+    help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 10MB"
 )
 
 # Privacy note ( upload counts only; no personal data)
@@ -144,10 +144,24 @@ st.sidebar.caption("This app collects  upload counts only. No personal data.")
 
  
 
-# Load data using simplified logic
+
+
+
+
+# Sidebar checklist
+progress_container = st.sidebar.container()
+with progress_container:
+    st.markdown("<div style='font-weight:600; margin:0 0 6px 0; text-align:center'>Checklist</div>", unsafe_allow_html=True)
+
+# Remove progressive callback functionality - let checklist be shown at the end only
+def update_checklist_callback(checklist_items):
+    """Callback disabled - checklist will be shown at the end"""
+    pass  # Do nothing during progressive updates
+
+# Load data using simplified logic with progressive checklist
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
-    raw_df, file_info = load_data_with_checklist(uploaded)
+    raw_df, file_info = load_data_with_checklist(uploaded, progress_callback=update_checklist_callback)
     # Count a single upload event per user session; no PII sent
     try:
         if not st.session_state.get("ga_uploaded_once", False):
@@ -157,7 +171,7 @@ if uploaded is not None:
         pass
 else:
     data_source_name = SAMPLE_PATH.name
-    raw_df, file_info = load_default_dataset(SAMPLE_PATH)
+    raw_df, file_info = load_data_with_checklist(SAMPLE_PATH, progress_callback=update_checklist_callback)
 
 # Prepare standardized series
 series, load_meta = prepare_series_from_dataframe(raw_df, file_info)
@@ -173,16 +187,7 @@ try:
 except Exception:
     pass
 
-if data_source_name:
-    try:
-        st.sidebar.caption(f"Dataset: {data_source_name}")
-    except Exception:
-        pass
-
-# Sidebar checklist
-progress_container = st.sidebar.container()
-with progress_container:
-    st.markdown("<div style='font-weight:600; margin:0 0 6px 0; text-align:center'>Checklist</div>", unsafe_allow_html=True)
+# Dataset name caption removed per user request
 
 def _render_checklist(items):
     with progress_container:
@@ -214,18 +219,28 @@ st.session_state["show_only_test"] = not st.session_state.get("show_full_history
 show_only_test = st.session_state.get("show_only_test", True)
 hide_features_table = st.session_state.get("hide_features_table", True)
 
-# Build checklist early and gate predictions/features if any non-OK in critical sections
-checklist_items, is_valid = validate_data_with_checklist(raw_df, file_info)
+# Display the complete checklist after loading
+if "checklist" in file_info and file_info["checklist"]:
+    with progress_container:
+        for status, text in file_info["checklist"]:
+            icon = "✅" if status == "ok" else ("⚠️" if status == "warning" else "❌")
+            st.markdown(f"<div style='margin:2px 0; line-height:1.2'>{icon} {text}</div>", unsafe_allow_html=True)
 
-if not is_valid:
-    _render_checklist(checklist_items)
+# Check validation status
+if file_info.get("error"):
+    # There was a loading error
     st.stop()
+
+# If we got here, validation passed
+is_valid = len(raw_df) > 0 and not file_info.get("error")
 
  
 
 try:
     if len(series) < 10:
         st.error("Insufficient data (need at least 10 rows) in the dataset.")
+    elif len(series.columns) < 2:
+        st.error("Dataset must have at least 2 columns: date column (first) and target column (last). Your file appears to have only 1 column. Please check your CSV format - make sure it uses commas as separators.")
     else:
         # Single required mode: Predict missing targets at the end
         feature_cols = [c for c in series.columns if c not in ("ds", "y")]
@@ -235,9 +250,9 @@ try:
             st.stop()
 
         future_rows, last_observed_idx = get_future_rows(series, feature_cols)
-        if future_rows.empty:
-            st.error("No future rows detected. Append future dates (and features if present) with empty target at the end.")
-            st.stop()
+        
+        # Allow continuing even when no future rows - show training comparison table
+        has_future_predictions = not future_rows.empty
 
         # Benchmark only on known rows
         series_for_benchmark = series.iloc[: last_observed_idx + 1].dropna(subset=["y"]).copy()
@@ -350,10 +365,23 @@ try:
             for r in results:
                 m = r["name"]
                 default_checked = bool(visibility.get(m, m in top_unique_set))
-                # Convert mape (relative) to percent for computing accuracy only; not displayed
-                mape_rel = r.get('mape', None)
-                mape_pct = (mape_rel * 100.0) if isinstance(mape_rel, (int, float)) and pd.notna(mape_rel) else None
-                acc_pct = (100.0 - mape_pct) if isinstance(mape_pct, float) and pd.notna(mape_pct) else None
+                # Prefer sMAPE-based accuracy: sMAPE in [0,2] -> accuracy = 100 * (1 - sMAPE/2)
+                smape_rel = r.get('smape', None)
+                if smape_rel is not None and pd.notna(smape_rel):
+                    try:
+                        smape_val = float(smape_rel)
+                        acc_pct = max(0.0, min(100.0, 100.0 * (1.0 - (smape_val / 2.0))))
+                    except Exception:
+                        acc_pct = None
+                else:
+                    # Fallback to MAPE-derived accuracy; clamp within [0, 100]
+                    mape_rel = r.get('mape', None)
+                    mape_pct = (float(mape_rel) * 100.0) if (mape_rel is not None and pd.notna(mape_rel)) else None
+                    if isinstance(mape_pct, (int, float)) and pd.notna(mape_pct):
+                        acc_raw = 100.0 - float(mape_pct)
+                        acc_pct = max(0.0, min(100.0, acc_raw))
+                    else:
+                        acc_pct = None
                 table_data.append({
                     "Show": default_checked,
                     "Model": m,
@@ -386,7 +414,7 @@ try:
                         ),
                         "Accuracy (%)": st.column_config.TextColumn(
                             "Accuracy (%)",
-                            help="Approximate accuracy derived from percentage error. Info only.",
+                            help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
                             disabled=True,
                         ),
                         "Train (s)": st.column_config.TextColumn(
@@ -414,7 +442,7 @@ try:
                 selected_models = {best_name}
 
             # Compute future forecasts once per dataset+future horizon and cache them
-            if not future_rows.empty:
+            if has_future_predictions:
                 try:
                     ser_ds = future_rows["ds"]
                     if pd.api.types.is_datetime64_any_dtype(ser_ds):
@@ -506,52 +534,58 @@ try:
 
         # Results table rendered below with per-model checkboxes
 
-        # Render checklist in sidebar grouped by module
-        try:
-            _render_checklist(checklist_items)
-        except Exception:
-            pass
+        # Checklist is already rendered progressively during validation
+        # No need to render again here
 
         # Offer CSV download with predicted target (after checklist, before settings)
-        try:
-            best_future_df = None
-            if isinstance(results, list) and len(results) > 0:
-                best_res = sorted(results, key=lambda r: r.get("rmse", float("inf")))[0]
-                best_future_df = best_res.get("future_df")
-            if isinstance(best_future_df, pd.DataFrame) and not best_future_df.empty:
-                time_col = load_meta.get("original_time_col", raw_df.columns[0] if not raw_df.empty else "date")
-                target_col = load_meta.get("original_target_col", raw_df.columns[-1] if not raw_df.empty else "target")
-                pred_col = f"predicted_{str(target_col)}"
-                # Map ds -> yhat for future rows
-                try:
-                    pred_map = dict(zip(pd.to_datetime(best_future_df["ds"], errors="coerce").dt.normalize(), best_future_df["yhat"]))
-                except Exception:
-                    pred_map = {}
-                download_df = raw_df.copy()
-                try:
-                    # Use detected date format if available to avoid re-parsing ambiguities
-                    detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
-                    if detected_fmt:
-                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", format=str(detected_fmt)).dt.normalize()
-                    else:
-                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True).dt.normalize()
-                    download_df[pred_col] = ds_norm.map(pred_map)
-                except Exception:
+        # Only show download when we have future predictions
+        if has_future_predictions:
+            try:
+                best_future_df = None
+                if isinstance(results, list) and len(results) > 0:
+                    best_res = sorted(results, key=lambda r: r.get("rmse", float("inf")))[0]
+                    best_future_df = best_res.get("future_df")
+                if isinstance(best_future_df, pd.DataFrame) and not best_future_df.empty:
+                    time_col = load_meta.get("original_time_col", raw_df.columns[0] if not raw_df.empty else "date")
+                    target_col = load_meta.get("original_target_col", raw_df.columns[-1] if not raw_df.empty else "target")
+                    pred_col = f"predicted_{str(target_col)}"
+                    # Map ds -> yhat for future rows
                     try:
-                        ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                        pred_map = dict(zip(pd.to_datetime(best_future_df["ds"], errors="coerce").dt.normalize(), best_future_df["yhat"]))
+                    except Exception:
+                        pred_map = {}
+                    download_df = raw_df.copy()
+                    try:
+                        # Use detected date format if available to avoid re-parsing ambiguities
+                        detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
+                        if detected_fmt:
+                            ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", format=str(detected_fmt)).dt.normalize()
+                        else:
+                            ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True).dt.normalize()
                         download_df[pred_col] = ds_norm.map(pred_map)
                     except Exception:
-                        download_df[pred_col] = None
-                out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
-                st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
-                st.sidebar.download_button(
-                    label="Download CSV with predictions",
-                    data=download_df.to_csv(index=False).encode("utf-8"),
-                    file_name=out_name,
-                    mime="text/csv",
+                        try:
+                            ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                            download_df[pred_col] = ds_norm.map(pred_map)
+                        except Exception:
+                            download_df[pred_col] = None
+                    out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
+                    st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
+                    st.sidebar.download_button(
+                        label="Download CSV with predictions",
+                        data=download_df.to_csv(index=False).encode("utf-8"),
+                        file_name=out_name,
+                        mime="text/csv",
+                    )
+            except Exception:
+                pass
+        else:
+            # When no future predictions, append a warning in the checklist
+            with progress_container:
+                st.markdown(
+                    "<div style='margin:2px 0; line-height:1.2'>⚠️ No future predictions available. The model comparison table shows training performance on your historical data.</div>",
+                    unsafe_allow_html=True,
                 )
-        except Exception:
-            pass
 
         # Sidebar display toggles (placed after checklist)
         with st.sidebar:
@@ -571,8 +605,7 @@ try:
             st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
 except Exception as e:
-    # Show checklist and the error so the UI does not appear frozen
-    _render_checklist(checklist_items)
+    # Checklist is already shown progressively, just show the error
     try:
         st.error(f"Unexpected error: {e}")
     except Exception:
