@@ -138,11 +138,16 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 10MB"
 )
 
+# Cache sample file bytes to avoid disk I/O on every cold start
+@st.cache_data(show_spinner=False)
+def _read_file_bytes_cached(path_str: str) -> bytes:
+    with open(path_str, "rb") as _fb:
+        return _fb.read()
+
 # Auto-load sample as a pseudo-upload on first load so it follows the same path
 if uploaded is None:
     try:
-        with open(SAMPLE_PATH, "rb") as _fb:
-            _sample_bytes = _fb.read()
+        _sample_bytes = _read_file_bytes_cached(str(SAMPLE_PATH))
         _auto_file = io.BytesIO(_sample_bytes)
         _auto_file.name = SAMPLE_PATH.name
         _auto_file.size = len(_sample_bytes)
@@ -293,34 +298,35 @@ try:
         except Exception:
             _trend_desc = None
 
-        # Cache benchmark results so UI toggles do not retrigger training
+        # Cache benchmark results across sessions so first render is faster (especially for sample)
         # Include a version and trend descriptor to avoid stale caches when logic changes
         bench_key = f"{BENCH_CACHE_VERSION}|{_df_fingerprint(series_for_benchmark)}|test_frac={DEFAULT_TEST_FRACTION}|trend={_trend_desc}"
-        bench_cache = st.session_state.get("bench_cache", {})
-        if bench_key in bench_cache:
-            results = bench_cache[bench_key]
-        else:
+
+        @st.cache_data(show_spinner=False)
+        def _benchmark_cached(series_df: pd.DataFrame, test_fraction: float, cache_version: str, trend_desc: str):
+            trainer = UnifiedTimeSeriesTrainer()
+            return trainer.benchmark_models(series_df, test_fraction=test_fraction)
+
+        try:
+            with st.spinner("Training and evaluating models..."):
+                # cache_version and trend_desc are passed to ensure proper invalidation when logic changes
+                results = _benchmark_cached(series_for_benchmark, DEFAULT_TEST_FRACTION, BENCH_CACHE_VERSION, _trend_desc or "none")
+        except Exception as e:
+            results = []
+            st.error(f"Benchmark failed: {e}")
+            # Fallback: provide a few baseline models so future forecasting can proceed
             try:
-                with st.spinner("Training and evaluating models..."):
-                    results = run_benchmark(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
-                bench_cache[bench_key] = results
-                st.session_state["bench_cache"] = bench_cache
-            except Exception as e:
-                results = []
-                st.error(f"Benchmark failed: {e}")
-                # Fallback: provide a few baseline models so future forecasting can proceed
-                try:
-                    baseline = [name for name, _ in get_fast_estimators()][:3]
-                except Exception:
-                    baseline = []
-                if baseline:
-                    results = [
-                        {"name": n, "rmse": float("inf"), "mape": None,
-                         "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame(),
-                         "train_time_s": None, "predict_time_s": None,
-                         "estimator_params": {}}
-                        for n in baseline
-                    ]
+                baseline = [name for name, _ in get_fast_estimators()][:3]
+            except Exception:
+                baseline = []
+            if baseline:
+                results = [
+                    {"name": n, "rmse": float("inf"), "mape": None,
+                     "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame(),
+                     "train_time_s": None, "predict_time_s": None,
+                     "estimator_params": {}}
+                    for n in baseline
+                ]
 
         # Get split date for plotting
         split_ds = None
