@@ -11,7 +11,7 @@ import streamlit as st
 from modeling import get_fast_estimators
 from modeling import train_on_known_and_forecast_missing, UnifiedTimeSeriesTrainer
 from features import build_features as _build_features
-from data_io import load_data_with_checklist, validate_data_with_checklist
+from data_io import load_data_with_checklist
 from data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
 from plot_utils import create_forecast_plot, create_results_table
 from trend import fit_trend
@@ -26,7 +26,7 @@ from sklearn.exceptions import ConvergenceWarning
 
 st.set_page_config(
     page_title="Daily Data Forecast",
-    page_icon="📊",
+    page_icon="📈", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -221,7 +221,6 @@ def _render_checklist(items):
 # Persisted UI defaults for display controls
 for _key, _default in [
     ("show_only_test", True),
-    ("hide_features_table", True),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
@@ -229,7 +228,6 @@ for _key, _default in [
 # New user-facing toggles default to sensible values
 for _key, _default in [
     ("show_full_history", False),
-    ("show_training_data_preview", False),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
@@ -239,7 +237,6 @@ st.session_state["show_only_test"] = not st.session_state.get("show_full_history
 
 # Read current control values from session state (widgets will render under the graph)
 show_only_test = st.session_state.get("show_only_test", True)
-hide_features_table = st.session_state.get("hide_features_table", True)
 
 # Display the complete checklist after loading
 if "checklist" in file_info and file_info["checklist"]:
@@ -788,8 +785,9 @@ try:
         try:
             if _trend_desc is not None:
                 with progress_container:
+                    icon = "⚠️" if str(_trend_desc).strip().lower() == "no trend detected" else "✅"
                     st.markdown(
-                        f"<div style='margin:2px 0; line-height:1.2'>✅ Trend: {_trend_desc}</div>",
+                        f"<div style='margin:2px 0; line-height:1.2'>{icon} Trend: {_trend_desc}</div>",
                         unsafe_allow_html=True,
                     )
         except Exception:
@@ -806,14 +804,7 @@ try:
         )
         with plot_container:
             st.pyplot(fig)
-        # Optional: show the dataframe used for training/prediction (first 5 rows)
-        if not hide_features_table:
-            try:
-                features_df, feature_cols = _build_features(series)
-                st.markdown("#### Training/prediction data (first 5 rows)")
-                st.dataframe(features_df.head(5), width="stretch")
-            except Exception as e:
-                st.warning(f"Could not build features preview: {e}")
+        # Training data preview removed per request
 
         # Results table rendered below with per-model checkboxes
 
@@ -886,7 +877,7 @@ try:
                     unsafe_allow_html=True,
                 )
 
-        # Sidebar display toggles (placed after checklist)
+        # Sidebar display toggles (after results)
         with st.sidebar:
             st.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Settings</div>", unsafe_allow_html=True)
             st.checkbox(
@@ -896,12 +887,6 @@ try:
             )
             st.session_state["show_only_test"] = not st.session_state.get("show_full_history", False)
 
-            st.checkbox(
-                "Show training data preview",
-                key="show_training_data_preview",
-                value=st.session_state.get("show_training_data_preview", False)
-            )
-            st.session_state["hide_features_table"] = not st.session_state.get("show_training_data_preview", False)
 
 except Exception as e:
     # Checklist is already shown progressively, just show the error
