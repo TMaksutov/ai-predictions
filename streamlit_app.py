@@ -846,12 +846,28 @@ try:
                         else:
                             ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True).dt.normalize()
                         download_df[pred_col] = ds_norm.map(pred_map)
+                        # Ensure date column is formatted as dd/mm/yyyy for CSV output
+                        try:
+                            download_df[time_col] = ds_norm.dt.strftime("%d/%m/%Y")
+                        except Exception:
+                            pass
                     except Exception:
                         try:
                             ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
                             download_df[pred_col] = ds_norm.map(pred_map)
+                            # Ensure date column is formatted as dd/mm/yyyy for CSV output
+                            try:
+                                download_df[time_col] = ds_norm.dt.strftime("%d/%m/%Y")
+                            except Exception:
+                                pass
                         except Exception:
                             download_df[pred_col] = None
+                            # Best-effort formatting of date column even if prediction mapping failed
+                            try:
+                                _tmp_dt = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True)
+                                download_df[time_col] = _tmp_dt.dt.strftime("%d/%m/%Y")
+                            except Exception:
+                                pass
                     out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
                     st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
                     st.sidebar.download_button(
