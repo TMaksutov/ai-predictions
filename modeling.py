@@ -29,6 +29,7 @@ from features import (
     build_base_row_for_date,
     build_exog_vector_for_date,
 )
+from trend import fit_trend
 
 # Import configuration
 try:
@@ -189,9 +190,28 @@ class UnifiedTimeSeriesTrainer:
         if feats_train.empty or test_df_raw.empty:
             return [{"name": "NoModels", "rmse": float("inf"), "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame()}]
 
-        # Prepare training arrays
+        # Prepare training arrays (raw target)
         X_train = feats_train[self.base_columns].to_numpy(dtype=float)
-        y_train = feats_train["y"].to_numpy(dtype=float)
+        y_train_raw = feats_train["y"].to_numpy(dtype=float)
+
+        # Fit trend on both training slice and full known series; use the stronger one
+        try:
+            trend_model_train = fit_trend(train_df)
+            try:
+                known_full = series_df.dropna(subset=["y"]).copy()
+            except Exception:
+                known_full = train_df
+            trend_model_full = fit_trend(known_full)
+            deg_train = int(getattr(trend_model_train, "degree", 0))
+            deg_full = int(getattr(trend_model_full, "degree", 0))
+            trend_model = trend_model_train if deg_train >= deg_full else trend_model_full
+            trend_fit_train = trend_model.fitted(feats_train["ds"]) if "ds" in feats_train.columns else pd.Series(np.zeros_like(y_train_raw))
+            y_train_det = (y_train_raw - trend_fit_train.to_numpy(dtype=float))
+            has_meaningful_trend = int(getattr(trend_model, "degree", 0)) > 0
+        except Exception:
+            trend_model = None
+            y_train_det = y_train_raw.copy()
+            has_meaningful_trend = False
 
         results = []
 
@@ -199,20 +219,21 @@ class UnifiedTimeSeriesTrainer:
         _seed_default_models_if_empty()
         for name, est in get_fast_estimators():
             try:
-                model = clone(est)
+                # Train RAW variant
+                model_raw = clone(est)
 
                 # Handle KNN special case
-                if hasattr(model, 'n_neighbors'):
-                    if isinstance(model, KNeighborsRegressor):
-                        desired_k = getattr(model, "n_neighbors", 5)
+                if hasattr(model_raw, 'n_neighbors'):
+                    if isinstance(model_raw, KNeighborsRegressor):
+                        desired_k = getattr(model_raw, "n_neighbors", 5)
                         max_allowed_k = max(1, min(desired_k, X_train.shape[0]))
                         if max_allowed_k != desired_k:
-                            model.set_params(n_neighbors=max_allowed_k)
+                            model_raw.set_params(n_neighbors=max_allowed_k)
 
                 # Time training
                 t0 = time.time()
-                model.fit(X_train, y_train)
-                train_time_s = float(time.time() - t0)
+                model_raw.fit(X_train, y_train_raw)
+                train_time_raw = float(time.time() - t0)
 
                 # Walk-forward prediction on the test slice WITHOUT using its targets or engineered features
                 t1 = time.time()
@@ -234,90 +255,125 @@ class UnifiedTimeSeriesTrainer:
                 # Separate base cols into non-exogenous and use schema for exogenous
                 base_cols_no_exog = [c for c in self.base_columns if not (c.startswith("x_") or c.startswith("m_"))]
 
-                preds_records = []
-                y_test_vals = []
-                test_ds_vals = []
-                last_processed_ds = hist["ds"].max()
-                for _, r in test_df_raw.iterrows():
-                    current_ds = pd.to_datetime(r["ds"], errors="coerce")
-                    if pd.isna(current_ds):
-                        continue
-                    # Roll forward day-by-day to update lags
-                    while (pd.Timestamp(current_ds) - pd.Timestamp(last_processed_ds)).days > 1:
-                        intermediate_ds = last_processed_ds + pd.Timedelta(days=1)
-                        base_vec = build_base_row_for_date(base_cols_no_exog, hist, intermediate_ds, start_ds)
-                        exog_vec = build_exog_vector_for_date(intermediate_ds, future_map, self.exog_schema)
-                        X_mid = np.array([base_vec + exog_vec]) if len(exog_vec) > 0 else np.array([base_vec])
-                        yhat_mid = float(model.predict(X_mid)[0])
-                        hist = pd.concat([hist, pd.DataFrame({"ds": [intermediate_ds], "y": [yhat_mid]})], ignore_index=True)
-                        last_processed_ds = intermediate_ds
+                def _walk_forward(model_obj: Any, add_trend: bool) -> Dict[str, Any]:
+                    preds_records = []
+                    y_test_vals = []
+                    test_ds_vals = []
+                    local_hist = hist.copy()
+                    last_processed_ds = local_hist["ds"].max()
+                    for _, r in test_df_raw.iterrows():
+                        current_ds = pd.to_datetime(r["ds"], errors="coerce")
+                        if pd.isna(current_ds):
+                            continue
+                        while (pd.Timestamp(current_ds) - pd.Timestamp(last_processed_ds)).days > 1:
+                            intermediate_ds = last_processed_ds + pd.Timedelta(days=1)
+                            base_vec = build_base_row_for_date(base_cols_no_exog, local_hist, intermediate_ds, start_ds)
+                            exog_vec = build_exog_vector_for_date(intermediate_ds, future_map, self.exog_schema)
+                            X_mid = np.array([base_vec + exog_vec]) if len(exog_vec) > 0 else np.array([base_vec])
+                            yhat_mid = float(model_obj.predict(X_mid)[0])
+                            if add_trend and trend_model is not None:
+                                try:
+                                    yhat_mid += float(trend_model.extrapolate(pd.Series([intermediate_ds])).iloc[0])
+                                except Exception:
+                                    pass
+                            local_hist = pd.concat([local_hist, pd.DataFrame({"ds": [intermediate_ds], "y": [yhat_mid]})], ignore_index=True)
+                            last_processed_ds = intermediate_ds
 
-                    base_vec = build_base_row_for_date(base_cols_no_exog, hist, current_ds, start_ds)
-                    exog_vec = build_exog_vector_for_date(current_ds, future_map, self.exog_schema)
-                    X_row = np.array([base_vec + exog_vec]) if len(exog_vec) > 0 else np.array([base_vec])
-                    yhat = float(model.predict(X_row)[0])
-                    preds_records.append(yhat)
-                    y_test_vals.append(float(pd.to_numeric(r.get("y"), errors="coerce")))
-                    test_ds_vals.append(pd.Timestamp(current_ds))
-                    hist = pd.concat([hist, pd.DataFrame({"ds": [current_ds], "y": [yhat]})], ignore_index=True)
-                    last_processed_ds = current_ds
+                        base_vec = build_base_row_for_date(base_cols_no_exog, local_hist, current_ds, start_ds)
+                        exog_vec = build_exog_vector_for_date(current_ds, future_map, self.exog_schema)
+                        X_row = np.array([base_vec + exog_vec]) if len(exog_vec) > 0 else np.array([base_vec])
+                        yhat = float(model_obj.predict(X_row)[0])
+                        if add_trend and trend_model is not None:
+                            try:
+                                yhat += float(trend_model.extrapolate(pd.Series([current_ds])).iloc[0])
+                            except Exception:
+                                pass
+                        preds_records.append(yhat)
+                        y_test_vals.append(float(pd.to_numeric(r.get("y"), errors="coerce")))
+                        test_ds_vals.append(pd.Timestamp(current_ds))
+                        local_hist = pd.concat([local_hist, pd.DataFrame({"ds": [current_ds], "y": [yhat]})], ignore_index=True)
+                        last_processed_ds = current_ds
 
-                predict_time_s = float(time.time() - t1)
+                    preds_arr = np.array(preds_records, dtype=float)
+                    y_test_arr = np.array(y_test_vals, dtype=float)
+                    if preds_arr.size > 0 and y_test_arr.size == preds_arr.size:
+                        se = (y_test_arr - preds_arr) ** 2
+                        mse = np.nanmean(se)
+                        rmse_val = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
+                        try:
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                abs_err = np.abs(y_test_arr - preds_arr)
+                                denom = np.abs(y_test_arr)
+                                mask = denom > 1e-12
+                                ratios = np.zeros_like(abs_err, dtype=float)
+                                ratios[mask] = abs_err[mask] / denom[mask]
+                                mape_val = float(np.nanmean(ratios)) if np.any(mask) else None
+                        except Exception:
+                            mape_val = None
+                        try:
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                denom2 = (np.abs(y_test_arr) + np.abs(preds_arr))
+                                mask2 = denom2 > 1e-12
+                                smape_vals = np.zeros_like(y_test_arr, dtype=float)
+                                smape_vals[mask2] = (2.0 * np.abs(preds_arr[mask2] - y_test_arr[mask2])) / denom2[mask2]
+                                smape_val = float(np.nanmean(smape_vals)) if np.any(mask2) else None
+                        except Exception:
+                            smape_val = None
+                    else:
+                        rmse_val = float("inf")
+                        mape_val = None
+                        smape_val = None
 
-                preds_arr = np.array(preds_records, dtype=float)
-                y_test_arr = np.array(y_test_vals, dtype=float)
-                if preds_arr.size > 0 and y_test_arr.size == preds_arr.size:
-                    se = (y_test_arr - preds_arr) ** 2
-                    mse = np.nanmean(se)
-                    rmse = float(np.sqrt(mse)) if np.isfinite(mse) else float("inf")
-                    # Compute MAPE (relative, e.g., 0.05 == 5%) for information only
-                    try:
-                        # Safe MAPE: ignore zero targets and clamp huge ratios
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            abs_err = np.abs(y_test_arr - preds_arr)
-                            denom = np.abs(y_test_arr)
-                            mask = denom > 1e-12
-                            ratios = np.zeros_like(abs_err, dtype=float)
-                            ratios[mask] = abs_err[mask] / denom[mask]
-                            mape = float(np.nanmean(ratios)) if np.any(mask) else None
-                    except Exception:
-                        mape = None
-                    # Compute sMAPE (symmetric MAPE) in [0, 2]
-                    try:
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            denom2 = (np.abs(y_test_arr) + np.abs(preds_arr))
-                            mask2 = denom2 > 1e-12
-                            smape_vals = np.zeros_like(y_test_arr, dtype=float)
-                            smape_vals[mask2] = (2.0 * np.abs(preds_arr[mask2] - y_test_arr[mask2])) / denom2[mask2]
-                            smape = float(np.nanmean(smape_vals)) if np.any(mask2) else None
-                    except Exception:
-                        smape = None
-                else:
-                    rmse = float("inf")
-                    mape = None
-                    smape = None
+                    forecast_df = pd.DataFrame({"ds": test_ds_vals, "yhat": preds_arr})
+                    test_df = pd.DataFrame({"ds": test_ds_vals, "y": y_test_arr})
+                    return {"forecast_df": forecast_df, "test_df": test_df, "rmse": rmse_val, "mape": mape_val, "smape": smape_val}
 
-                forecast_df = pd.DataFrame({
-                    "ds": test_ds_vals,
-                    "yhat": preds_arr,
-                })
+                # RAW evaluation
+                res_raw = _walk_forward(model_raw, add_trend=False)
+                predict_time_raw = float(time.time() - t1)
 
-                test_df = pd.DataFrame({
-                    "ds": test_ds_vals,
-                    "y": y_test_arr,
-                })
-
+                # Keep full unique registry name so parameterized variants are independent
                 results.append({
                     "name": name,
-                    "rmse": rmse,
-                    "mape": mape,
-                    "smape": smape,
-                    "forecast_df": forecast_df,
-                    "test_df": test_df,
-                    "train_time_s": train_time_s,
-                    "predict_time_s": predict_time_s,
+                    "rmse": res_raw["rmse"],
+                    "mape": res_raw["mape"],
+                    "smape": res_raw["smape"],
+                    "forecast_df": res_raw["forecast_df"],
+                    "test_df": res_raw["test_df"],
+                    "train_time_s": train_time_raw,
+                    "predict_time_s": predict_time_raw,
                     "estimator_params": est.get_params(deep=True),
                 })
+
+                # DETRENDED variant - only if meaningful trend detected
+                if has_meaningful_trend:
+                    model_det = clone(est)
+                    # KNN adjustment again (X same)
+                    if hasattr(model_det, 'n_neighbors'):
+                        if isinstance(model_det, KNeighborsRegressor):
+                            desired_k = getattr(model_det, "n_neighbors", 5)
+                            max_allowed_k = max(1, min(desired_k, X_train.shape[0]))
+                            if max_allowed_k != desired_k:
+                                model_det.set_params(n_neighbors=max_allowed_k)
+                    t2 = time.time()
+                    model_det.fit(X_train, y_train_det)
+                    train_time_det = float(time.time() - t2)
+
+                    t3 = time.time()
+                    res_det = _walk_forward(model_det, add_trend=True)
+                    predict_time_det = float(time.time() - t3)
+
+                    results.append({
+                        "name": f"{name}+Trend",
+                        "rmse": res_det["rmse"],
+                        "mape": res_det["mape"],
+                        "smape": res_det["smape"],
+                        "forecast_df": res_det["forecast_df"],
+                        "test_df": res_det["test_df"],
+                        "train_time_s": train_time_det,
+                        "predict_time_s": predict_time_det,
+                        "estimator_params": est.get_params(deep=True),
+                    })
 
             except Exception as e:
                 results.append({

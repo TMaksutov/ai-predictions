@@ -8,10 +8,12 @@ from features import build_features as _build_features
 from data_io import load_data_with_checklist, validate_data_with_checklist
 from data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
 from plot_utils import create_forecast_plot, create_results_table
+from trend import fit_trend
 import io
 import uuid
 import json
 import os
+import time
 from urllib import request
 import warnings
 from sklearn.exceptions import ConvergenceWarning
@@ -26,18 +28,14 @@ st.set_page_config(
 # Suppress noisy optimization convergence warnings from scikit-learn in UI
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
-# Enforce a wider sidebar
+# Enforce a wider sidebar and remove top padding
 st.markdown(
     """
     <style>
-        [data-testid="stSidebar"] {
-            min-width: 500px;
-            max-width: 500px;
-        }
-        [data-testid="stSidebar"] > div:first-child {
-            min-width: 500px;
-            max-width: 500px;
-        }
+        .block-container { padding: 1rem; margin: 1rem; }
+        header[data-testid="stHeader"] { height: 20px; }
+        [data-testid="stSidebar"] { min-width: 500px; max-width: 500px; }
+        [data-testid="stSidebar"] > div:first-child { min-width: 500px; max-width: 500px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -45,6 +43,7 @@ st.markdown(
 
 SAMPLE_PATH = Path(__file__).parent / "sample.csv"
 METRIC_NAME = "RMSE"
+BENCH_CACHE_VERSION = "trend_models_v1"
 
 # Utilities, I/O helpers, and checklist provided by: data_io.py, modeling.py, features.py
 
@@ -104,6 +103,8 @@ def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
 def _base_model_type(model_name: str) -> str:
     """Extract base type from a model name by trimming trailing digits."""
     try:
+        # Normalize name: strip spaces and remove optional "+Trend" suffix
+        model_name = str(model_name).replace("+Trend", "").strip()
         for idx, ch in enumerate(model_name):
             if ch.isdigit():
                 return model_name[:idx] or model_name
@@ -112,30 +113,23 @@ def _base_model_type(model_name: str) -> str:
         return str(model_name)
 
 
-def _pick_top_unique_models(results: list, max_models: int = 3) -> list:
-    """Pick up to N best models with unique base types by RMSE."""
-    chosen = []
-    seen_types = set()
+def _pick_top_models(results: list, max_models: int = 3) -> list:
+    """Pick the top-N models by RMSE (no uniqueness constraint)."""
     try:
-        for r in sorted(results, key=lambda x: x.get("rmse", float("inf"))):
-            name = r.get("name")
-            if not name:
-                continue
-            base = _base_model_type(name)
-            if base in seen_types:
-                continue
-            seen_types.add(base)
-            chosen.append(name)
-            if len(chosen) >= max_models:
-                break
+        ordered = sorted(results, key=lambda x: x.get("rmse", float("inf")))
+        names = [r.get("name") for r in ordered if r.get("name")]
+        return names[:max_models]
     except Exception:
-        pass
-    return chosen
+        return []
 
 
  # -----------------------------
- # UI
- # -----------------------------
+# UI
+# -----------------------------
+
+# Sidebar header
+st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 12px 0; text-align:center; font-size:18px'>Upload Daily Data</div>", unsafe_allow_html=True)
+
 # Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
     "Upload a CSV or Excel file (date column first, target last, 10MB max)",
@@ -143,6 +137,18 @@ uploaded = st.sidebar.file_uploader(
     accept_multiple_files=False,
     help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 10MB"
 )
+
+# Auto-load sample as a pseudo-upload on first load so it follows the same path
+if uploaded is None:
+    try:
+        with open(SAMPLE_PATH, "rb") as _fb:
+            _sample_bytes = _fb.read()
+        _auto_file = io.BytesIO(_sample_bytes)
+        _auto_file.name = SAMPLE_PATH.name
+        _auto_file.size = len(_sample_bytes)
+        uploaded = _auto_file
+    except Exception:
+        pass
 
 # Privacy note ( upload counts only; no personal data)
 st.sidebar.caption("This app collects  upload counts only. No personal data.")
@@ -163,7 +169,7 @@ def update_checklist_callback(checklist_items):
     """Callback disabled - checklist will be shown at the end"""
     pass  # Do nothing during progressive updates
 
-# Load data using simplified logic with progressive checklist
+# Load data using unified logic (uploaded or auto-loaded sample as uploaded)
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
     raw_df, file_info = load_data_with_checklist(uploaded, progress_callback=update_checklist_callback)
@@ -175,8 +181,8 @@ if uploaded is not None:
     except Exception:
         pass
 else:
-    data_source_name = SAMPLE_PATH.name
-    raw_df, file_info = load_data_with_checklist(SAMPLE_PATH, progress_callback=update_checklist_callback)
+    st.error("No file uploaded and sample could not be loaded.")
+    st.stop()
 
 # Prepare standardized series
 series, load_meta = prepare_series_from_dataframe(raw_df, file_info)
@@ -241,6 +247,9 @@ is_valid = len(raw_df) > 0 and not file_info.get("error")
 
  
 
+# Main screen header
+st.markdown("<div style='font-weight:600; margin:12px 0 18px 0; text-align:center; font-size:24px'>Prediction Models Benchmark and Forecast</div>", unsafe_allow_html=True)
+
 try:
     if len(series) < 10:
         st.error("Insufficient data (need at least 10 rows) in the dataset.")
@@ -267,8 +276,26 @@ try:
         except ImportError:
             DEFAULT_TEST_FRACTION = 0.2
 
+        # Compute trend description early for use throughout the function
+        _trend_desc = None
+        try:
+            known = series.dropna(subset=["y"]).copy()
+            if not known.empty:
+                from trend import fit_trend
+                tm = fit_trend(known)
+                deg = int(getattr(tm, "degree", 0))
+                if deg <= 0:
+                    _trend_desc = "No trend detected"
+                elif deg == 1:
+                    _trend_desc = "Linear trend"
+                else:
+                    _trend_desc = "Linear+Parabola trend"
+        except Exception:
+            _trend_desc = None
+
         # Cache benchmark results so UI toggles do not retrigger training
-        bench_key = f"{_df_fingerprint(series_for_benchmark)}|test_frac={DEFAULT_TEST_FRACTION}"
+        # Include a version and trend descriptor to avoid stale caches when logic changes
+        bench_key = f"{BENCH_CACHE_VERSION}|{_df_fingerprint(series_for_benchmark)}|test_frac={DEFAULT_TEST_FRACTION}|trend={_trend_desc}"
         bench_cache = st.session_state.get("bench_cache", {})
         if bench_key in bench_cache:
             results = bench_cache[bench_key]
@@ -312,24 +339,34 @@ try:
         # Placeholders to control layout order: plot above, table below
         plot_container = st.container()
         table_container = st.container()
-        # Compute top unique models (max 3, unique base type)
-        top_unique_models = _pick_top_unique_models(results, max_models=3)
-        top_unique_set = set(top_unique_models)
+        # Compute top 3 models by RMSE (no uniqueness constraint)
+        top_models = _pick_top_models(results, max_models=3)
+        top_models_set = set(top_models)
+        top_index_set = set(range(min(3, len(results))))
         if best_name is not None:
-            # Initialize or reconcile visibility state
+            # Initialize or reconcile visibility state with separate test/prediction controls
             available_models = [r["name"] for r in results]
-            visibility = st.session_state.get("model_visibility")
+            test_visibility = st.session_state.get("test_visibility")
+            pred_visibility = st.session_state.get("pred_visibility")
             prev_key = st.session_state.get("visibility_key")
-            if (not isinstance(visibility, dict)) or (set(visibility.keys()) != set(available_models)):
-                # Model set changed: reset defaults to top unique models
-                visibility = {name: (name in top_unique_set) for name in available_models}
-                st.session_state["model_visibility"] = visibility
-                st.session_state["visibility_key"] = bench_key
+            
+            # Initialize test visibility (all models can be shown for test data)
+            if (not isinstance(test_visibility, dict)) or (set(test_visibility.keys()) != set(available_models)):
+                test_visibility = {name: (name in top_models_set) for name in available_models}
+                st.session_state["test_visibility"] = test_visibility
             elif prev_key != bench_key:
-                # Dataset changed: reset defaults to top unique models for the new dataset
-                visibility = {name: (name in top_unique_set) for name in available_models}
-                st.session_state["model_visibility"] = visibility
-                st.session_state["visibility_key"] = bench_key
+                test_visibility = {name: (name in top_models_set) for name in available_models}
+                st.session_state["test_visibility"] = test_visibility
+            
+            # Initialize prediction visibility (only top 3 models can be shown for predictions)
+            if (not isinstance(pred_visibility, dict)) or (set(pred_visibility.keys()) != set(available_models)):
+                pred_visibility = {name: (name in top_models_set) for name in available_models}
+                st.session_state["pred_visibility"] = pred_visibility
+            elif prev_key != bench_key:
+                pred_visibility = {name: (name in top_models_set) for name in available_models}
+                st.session_state["pred_visibility"] = pred_visibility
+            
+            st.session_state["visibility_key"] = bench_key
 
             # Apply any pending edits from the editor state so toggles reflect immediately on rerun
             try:
@@ -340,13 +377,127 @@ try:
                         try:
                             if 0 <= idx < len(index_to_model):
                                 model_name = index_to_model[idx]
-                                if model_name in visibility and "Show" in changes:
-                                    visibility[model_name] = bool(changes["Show"])
+                                if "Show" in changes:
+                                    show_checked = bool(changes["Show"])
+                                    test_visibility[model_name] = show_checked
+                                    if model_name in top_models_set:
+                                        pred_visibility[model_name] = show_checked
+                                    else:
+                                        pred_visibility[model_name] = False
                         except Exception:
                             pass
-                    st.session_state["model_visibility"] = visibility
+                    st.session_state["test_visibility"] = test_visibility
+                    st.session_state["pred_visibility"] = pred_visibility
             except Exception:
                 pass
+
+            # Ensure future predictions are computed before building the table so Predict (s) is populated
+            if has_future_predictions:
+                try:
+                    ser_ds = future_rows["ds"]
+                    if pd.api.types.is_datetime64_any_dtype(ser_ds):
+                        key_vals = ser_ds.dt.strftime('%Y-%m-%d').tolist()
+                    else:
+                        key_vals = pd.to_datetime(ser_ds, errors="coerce").dt.strftime('%Y-%m-%d').tolist()
+                    fr_ds_key = ",".join(key_vals)
+                except Exception:
+                    fr_ds_key = str(len(future_rows))
+                future_key = f"{_df_fingerprint(series)}|future={fr_ds_key}"
+                future_cache = st.session_state.get("future_cache", {})
+
+                if future_key not in future_cache:
+                    try:
+                        with st.spinner("Forecasting future values..."):
+                            reg_estimators = list(get_fast_estimators())
+                            name_to_est_full = {name: est for name, est in reg_estimators}
+                            base_to_est = {}
+                            for disp_name, est in reg_estimators:
+                                base = str(disp_name).split(" (")[0]
+                                if base not in base_to_est:
+                                    base_to_est[base] = est
+                            model_to_future = {}
+                            model_to_future_time = {}
+                            for idx, res in enumerate(results):
+                                model_name = res.get("name")
+                                if idx not in top_index_set:
+                                    model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    model_to_future_time[model_name] = None
+                                    continue
+                                is_trend_model = "+Trend" in model_name
+                                base_model_name = model_name.replace("+Trend", "") if is_trend_model else model_name
+                                est = base_to_est.get(base_model_name) or name_to_est_full.get(base_model_name)
+                                if est is None:
+                                    for disp_name, cand in reg_estimators:
+                                        if str(disp_name).startswith(base_model_name):
+                                            est = cand
+                                            break
+                                if est is None:
+                                    model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    model_to_future_time[model_name] = None
+                                    continue
+                                params = res.get("estimator_params", {})
+                                try:
+                                    if params:
+                                        est.set_params(**params)
+                                except Exception:
+                                    pass
+                                try:
+                                    t_start_future = time.time()
+                                    if is_trend_model:
+                                        from trend import fit_trend
+                                        known_data = series.dropna(subset=["y"]).copy()
+                                        trend_model = fit_trend(known_data)
+                                        detrended_series = series.copy()
+                                        trend_fitted = trend_model.fitted(detrended_series["ds"])
+                                        detrended_series.loc[detrended_series["y"].notna(), "y"] = (
+                                            detrended_series.loc[detrended_series["y"].notna(), "y"] - 
+                                            trend_fitted[detrended_series["y"].notna()].values
+                                        )
+                                        res_future_df = train_on_known_and_forecast_missing(
+                                            detrended_series, est, future_rows=future_rows
+                                        )
+                                        if not res_future_df.empty:
+                                            future_trend = trend_model.extrapolate(res_future_df["ds"])
+                                            res_future_df["yhat"] = res_future_df["yhat"] + future_trend.values
+                                    else:
+                                        res_future_df = train_on_known_and_forecast_missing(
+                                            series, est, future_rows=future_rows
+                                        )
+                                    t_end_future = time.time()
+                                    if res_future_df.empty:
+                                        res_future_df = pd.DataFrame({
+                                            "ds": future_rows["ds"],
+                                            "yhat": [series["y"].dropna().iloc[-1]] * len(future_rows)
+                                        })
+                                    model_to_future_time[model_name] = float(max(0.0, t_end_future - t_start_future))
+                                except Exception:
+                                    res_future_df = pd.DataFrame({
+                                        "ds": future_rows["ds"],
+                                        "yhat": [series["y"].dropna().iloc[-1] if series["y"].notna().any() else 0.0] * len(future_rows)
+                                    })
+                                    model_to_future_time[model_name] = None
+                                model_to_future[model_name] = res_future_df
+                            future_cache[future_key] = {"preds": model_to_future, "times": model_to_future_time}
+                            st.session_state["future_cache"] = future_cache
+                    except Exception:
+                        pass
+
+                # Attach cached results immediately so Predict (s) is available in the table
+                cache_entry = future_cache.get(future_key, {})
+                if isinstance(cache_entry, dict) and ("preds" in cache_entry or "times" in cache_entry):
+                    model_to_future = cache_entry.get("preds", {})
+                    model_to_future_time = cache_entry.get("times", {})
+                else:
+                    model_to_future = cache_entry if isinstance(cache_entry, dict) else {}
+                    model_to_future_time = {k: None for k in model_to_future.keys()}
+                for idx, res in enumerate(results):
+                    model_name = res.get("name")
+                    if idx in top_index_set:
+                        res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
+                        res["predict_future_time_s"] = model_to_future_time.get(model_name, None)
+                    else:
+                        res["future_df"] = pd.DataFrame({"ds": [], "yhat": []})
+                        res["predict_future_time_s"] = None
 
             # Table will render below the plot
 
@@ -369,82 +520,111 @@ try:
             table_data = []
             for r in results:
                 m = r["name"]
-                default_checked = bool(visibility.get(m, m in top_unique_set))
-                # Prefer sMAPE-based accuracy: sMAPE in [0,2] -> accuracy = 100 * (1 - sMAPE/2)
-                smape_rel = r.get('smape', None)
-                if smape_rel is not None and pd.notna(smape_rel):
-                    try:
-                        smape_val = float(smape_rel)
-                        acc_pct = max(0.0, min(100.0, 100.0 * (1.0 - (smape_val / 2.0))))
-                    except Exception:
-                        acc_pct = None
-                else:
-                    # Fallback to MAPE-derived accuracy; clamp within [0, 100]
-                    mape_rel = r.get('mape', None)
-                    mape_pct = (float(mape_rel) * 100.0) if (mape_rel is not None and pd.notna(mape_rel)) else None
-                    if isinstance(mape_pct, (int, float)) and pd.notna(mape_pct):
-                        acc_raw = 100.0 - float(mape_pct)
-                        acc_pct = max(0.0, min(100.0, acc_raw))
-                    else:
-                        acc_pct = None
+                test_checked = bool(test_visibility.get(m, m in top_models_set))
+                # Only allow prediction checkbox for top 3 models
+                pred_checked = bool(pred_visibility.get(m, False)) if m in top_models_set else False
+                # Simple accuracy calculation from MAPE
+                mape_val = r.get('mape', None)
+                try:
+                    acc_pct = max(0.0, 100.0 - float(mape_val) * 100.0) if pd.notna(mape_val) else None
+                except Exception:
+                    acc_pct = None
+                
+                # Model display name (no extra suffix)
+                model_display = m
+                # Simple checkbox - if either test or prediction is checked, show the checkbox as checked
+                show_checked = test_checked or pred_checked
+                
+                # predict_time_s from benchmarks is actually test prediction time, so we'll use it for Test (s)
+                # For future prediction time, show the measured seconds for top-3 models
+                future_predict_time = r.get("predict_future_time_s", None) if m in top_models_set else ""
+                
                 table_data.append({
-                    "Show": default_checked,
-                    "Model": m,
+                    "Show": show_checked,
+                    "Model": model_display,
                     f"{METRIC_NAME}": _fmt(r.get('rmse', None)),
                     "Accuracy (%)": _fmt(acc_pct),
                     "Train (s)": _fmt(r.get('train_time_s', None)),
-                    "Predict (s)": _fmt(r.get('predict_time_s', None))
+                    "Test (s)": _fmt(r.get('predict_time_s', None)),  # Time to predict on test data during benchmarking
+                    "Predict (s)": _fmt(future_predict_time)  # Time to predict future values (only for top 3 models)
                 })
 
             results_df = pd.DataFrame(table_data)
 
             with table_container:
+                # Create column configuration
+                column_config = {
+                    "Show": st.column_config.CheckboxColumn(
+                        "Show",
+                        help="Display this model's test and prediction lines (if available)",
+                        default=False,
+                    ),
+                    "Model": st.column_config.TextColumn(
+                        "Model",
+                        disabled=True,
+                    ),
+                    f"{METRIC_NAME}": st.column_config.TextColumn(
+                        f"{METRIC_NAME}",
+                        disabled=True,
+                    ),
+                    "Accuracy (%)": st.column_config.TextColumn(
+                        "Accuracy (%)",
+                        help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
+                        disabled=True,
+                    ),
+                    "Train (s)": st.column_config.TextColumn(
+                        "Train (s)",
+                        disabled=True,
+                    ),
+                    "Test (s)": st.column_config.TextColumn(
+                        "Test (s)",
+                        help="Time to predict on test data during benchmarking",
+                        disabled=True,
+                    ),
+                    "Predict (s)": st.column_config.TextColumn(
+                        "Predict (s)",
+                        help="Time to predict future values (only computed for top 3 models)",
+                        disabled=True,
+                    ),
+                }
+                
+                # For models not in top 3, disable the prediction checkbox by making it read-only
+                # We'll handle this in the processing logic instead of using disabled parameter
                 edited_df = st.data_editor(
                     results_df,
-                    width='stretch',
+                    use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "Show": st.column_config.CheckboxColumn(
-                            "Show",
-                            help="Select models to display in the plot",
-                            default=False,
-                        ),
-                        "Model": st.column_config.TextColumn(
-                            "Model",
-                            disabled=True,
-                        ),
-                        f"{METRIC_NAME}": st.column_config.TextColumn(
-                            f"{METRIC_NAME}",
-                            disabled=True,
-                        ),
-                        "Accuracy (%)": st.column_config.TextColumn(
-                            "Accuracy (%)",
-                            help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
-                            disabled=True,
-                        ),
-                        "Train (s)": st.column_config.TextColumn(
-                            "Train (s)",
-                            disabled=True,
-                        ),
-                        "Predict (s)": st.column_config.TextColumn(
-                            "Predict (s)",
-                            disabled=True,
-                        ),
-                    },
+                    column_config=column_config,
                     key="model_table_editor"
                 )
 
             
 
             for _, row in edited_df.iterrows():
-                model_name = row["Model"]
-                if model_name in visibility:
-                    visibility[model_name] = bool(row["Show"])
+                model_display = row["Model"]
+                # Extract real model name (remove " (no predictions)" suffix if present)
+                model_name = model_display.replace(" (no predictions)", "")
+                show_checked = bool(row["Show"])
+                
+                # Simple logic: if checked, show both test and predictions (if available)
+                test_visibility[model_name] = show_checked
+                
+                # Only show predictions for top 3 models, and only if checked
+                if model_name in top_models_set:
+                    pred_visibility[model_name] = show_checked
+                else:
+                    # Non-top-3 models never show predictions
+                    pred_visibility[model_name] = False
 
-            st.session_state["model_visibility"] = visibility
-            selected_models = {name for name, v in visibility.items() if v}
-            if not selected_models and best_name is not None:
-                selected_models = {best_name}
+            st.session_state["test_visibility"] = test_visibility
+            st.session_state["pred_visibility"] = pred_visibility
+            
+            # Selected models for test data display
+            test_selected_models = {name for name, v in test_visibility.items() if v}
+            # Selected models for prediction display
+            pred_selected_models = {name for name, v in pred_visibility.items() if v}
+            
+            # When nothing is selected, show no model lines (no automatic fallback)
 
             # Compute future forecasts once per dataset+future horizon and cache them
             if has_future_predictions:
@@ -464,17 +644,37 @@ try:
                 if future_key not in future_cache:
                     try:
                         with st.spinner("Forecasting future values..."):
-                            name_to_est = {name: est for name, est in get_fast_estimators()}
+                            # Build mapping for exact and base display name -> estimator
+                            reg_estimators = list(get_fast_estimators())
+                            name_to_est_full = {name: est for name, est in reg_estimators}
+                            base_to_est = {}
+                            for disp_name, est in reg_estimators:
+                                base = str(disp_name).split(" (")[0]
+                                if base not in base_to_est:
+                                    base_to_est[base] = est
                             model_to_future = {}
+                            model_to_future_time = {}
                             for res in results:
                                 model_name = res.get("name")
                                 # Restrict future predictions to top unique models only
-                                if model_name not in top_unique_set:
+                                if model_name not in top_models_set:
                                     model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    model_to_future_time[model_name] = None
                                     continue
-                                est = name_to_est.get(model_name)
+                                # Handle +Trend models specially
+                                is_trend_model = "+Trend" in model_name
+                                base_model_name = model_name.replace("+Trend", "") if is_trend_model else model_name
+                                # Prefer exact match first, then base name, then prefix fallback
+                                est = name_to_est_full.get(base_model_name) or base_to_est.get(base_model_name)
+                                if est is None:
+                                    # Try prefix match against registry keys
+                                    for disp_name, cand in reg_estimators:
+                                        if str(disp_name).startswith(base_model_name):
+                                            est = cand
+                                            break
                                 if est is None:
                                     model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
+                                    model_to_future_time[model_name] = None
                                     continue
                                 params = res.get("estimator_params", {})
                                 try:
@@ -483,35 +683,76 @@ try:
                                 except Exception:
                                     pass
                                 try:
-                                    res_future_df = train_on_known_and_forecast_missing(
-                                        series, est, future_rows=future_rows
-                                    )
+                                    t_start_future = time.time()
+                                    if is_trend_model:
+                                        # For trend models, we need to handle detrending manually
+                                        # since train_on_known_and_forecast_missing doesn't support it
+                                        from trend import fit_trend
+                                        
+                                        # Fit trend on known data
+                                        known_data = series.dropna(subset=["y"]).copy()
+                                        trend_model = fit_trend(known_data)
+                                        
+                                        # Create detrended series for training
+                                        detrended_series = series.copy()
+                                        trend_fitted = trend_model.fitted(detrended_series["ds"])
+                                        detrended_series.loc[detrended_series["y"].notna(), "y"] = (
+                                            detrended_series.loc[detrended_series["y"].notna(), "y"] - 
+                                            trend_fitted[detrended_series["y"].notna()].values
+                                        )
+                                        
+                                        # Train on detrended data
+                                        res_future_df = train_on_known_and_forecast_missing(
+                                            detrended_series, est, future_rows=future_rows
+                                        )
+                                        
+                                        # Add trend back to predictions
+                                        if not res_future_df.empty:
+                                            future_trend = trend_model.extrapolate(res_future_df["ds"])
+                                            res_future_df["yhat"] = res_future_df["yhat"] + future_trend.values
+                                    else:
+                                        # Regular model, no detrending
+                                        res_future_df = train_on_known_and_forecast_missing(
+                                            series, est, future_rows=future_rows
+                                        )
+                                    t_end_future = time.time()
                                     if res_future_df.empty:
                                         # provide at least a flat continuation to avoid blank UI
                                         res_future_df = pd.DataFrame({
                                             "ds": future_rows["ds"],
                                             "yhat": [series["y"].dropna().iloc[-1]] * len(future_rows)
                                         })
+                                    model_to_future_time[model_name] = float(max(0.0, t_end_future - t_start_future))
                                 except Exception:
                                     res_future_df = pd.DataFrame({
                                         "ds": future_rows["ds"],
                                         "yhat": [series["y"].dropna().iloc[-1] if series["y"].notna().any() else 0.0] * len(future_rows)
                                     })
+                                    model_to_future_time[model_name] = None
                                 model_to_future[model_name] = res_future_df
-                            future_cache[future_key] = model_to_future
+                            future_cache[future_key] = {"preds": model_to_future, "times": model_to_future_time}
                             st.session_state["future_cache"] = future_cache
                     except Exception as e:
                         st.error(f"Forecasting failed: {e}")
 
                 # Attach cached future forecasts to results
-                model_to_future = future_cache.get(future_key, {})
+                cache_entry = future_cache.get(future_key, {})
+                if isinstance(cache_entry, dict) and ("preds" in cache_entry or "times" in cache_entry):
+                    model_to_future = cache_entry.get("preds", {})
+                    model_to_future_time = cache_entry.get("times", {})
+                else:
+                    # Backward-compat: older cache stored a flat map of model->future_df
+                    model_to_future = cache_entry if isinstance(cache_entry, dict) else {}
+                    model_to_future_time = {k: None for k in model_to_future.keys()}
                 for res in results:
                     model_name = res.get("name")
                     # Ensure only top unique models have future predictions; others remain empty
-                    if model_name in top_unique_set:
+                    if model_name in top_models_set:
                         res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
+                        res["predict_future_time_s"] = model_to_future_time.get(model_name, None)
                     else:
                         res["future_df"] = pd.DataFrame({"ds": [], "yhat": []})
+                        res["predict_future_time_s"] = None
 
                 # Set horizon from any model with predictions
                 for res in results:
@@ -519,12 +760,37 @@ try:
                         future_horizon = len(res["future_df"]) or 0
                         break
 
+        # Compute simple trend over the whole known series
+        trend_df_plot = None
+        try:
+            known = series.dropna(subset=["y"]).copy()
+            if not known.empty:
+                tm = fit_trend(known)
+                trend_vals = tm.fitted(series["ds"]) if "ds" in series.columns else None
+                if trend_vals is not None:
+                    trend_df_plot = pd.DataFrame({"ds": series["ds"], "trend": trend_vals})
+        except Exception:
+            trend_df_plot = None
+
+        # Show trend description in the left checklist area
+        try:
+            if _trend_desc is not None:
+                with progress_container:
+                    st.markdown(
+                        f"<div style='margin:2px 0; line-height:1.2'>✅ Trend: {_trend_desc}</div>",
+                        unsafe_allow_html=True,
+                    )
+        except Exception:
+            pass
+
         # Create and display plot using utility function (rendered above the table)
         fig = create_forecast_plot(
             series=series, results=results, future_df=None,
             show_only_test=show_only_test, split_ds=split_ds,
             hide_non_chosen_models=False, best_name=best_name,
-            visible_models=selected_models,
+            visible_test_models=test_selected_models,
+            visible_pred_models=pred_selected_models,
+            trend_series=trend_df_plot,
         )
         with plot_container:
             st.pyplot(fig)
@@ -533,7 +799,7 @@ try:
             try:
                 features_df, feature_cols = _build_features(series)
                 st.markdown("#### Training/prediction data (first 5 rows)")
-                st.dataframe(features_df.head(5), width='stretch')
+                st.dataframe(features_df.head(5), use_container_width=True)
             except Exception as e:
                 st.warning(f"Could not build features preview: {e}")
 

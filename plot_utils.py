@@ -10,11 +10,28 @@ from typing import Optional, Set
 def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.DataFrame = None,
                         show_only_test: bool = True, split_ds = None,
                         hide_non_chosen_models: bool = True, best_name: str = None,
-                        visible_models: Optional[Set[str]] = None):
+                        visible_models: Optional[Set[str]] = None,
+                        visible_test_models: Optional[Set[str]] = None,
+                        visible_pred_models: Optional[Set[str]] = None,
+                        trend_series: pd.DataFrame = None):
     """
     Create a comprehensive forecast plot with actuals and model predictions.
+    
+    Args:
+        visible_models: Legacy parameter for backward compatibility (will be ignored if visible_test_models/visible_pred_models provided)
+        visible_test_models: Models to show test performance for
+        visible_pred_models: Models to show predictions for
     """
     fig, ax = plt.subplots(figsize=(20, 6))
+    
+    # Handle backward compatibility
+    if visible_test_models is None and visible_pred_models is None and visible_models is not None:
+        visible_test_models = visible_models
+        visible_pred_models = visible_models
+    elif visible_test_models is None:
+        visible_test_models = set()
+    elif visible_pred_models is None:
+        visible_pred_models = set()
 
     # Ensure series ds is datetime normalized
     visible_series = series.copy()
@@ -36,16 +53,26 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     # Calculate fixed y-axis limits based on actuals and visible model predictions
     # This ensures consistent scaling regardless of which models are shown
     y_min, y_max = visible_series["y"].min(), visible_series["y"].max()
+    # Track the latest date that is actually visible so we can cap the trend line
+    try:
+        x_max_date = pd.to_datetime(visible_series["ds"], errors="coerce").max()
+    except Exception:
+        x_max_date = None
 
-    # Consider forecasts and future predictions only for visible models (if provided)
+    # Consider forecasts and future predictions for visible models
     for res in results:
         name = res.get("name")
-        if visible_models is not None and name not in visible_models:
+        # Include if visible for test or prediction
+        if name not in visible_test_models and name not in visible_pred_models:
             continue
         fcast = res.get("forecast_df")
         if fcast is not None and not fcast.empty:
             y_min = min(y_min, fcast["yhat"].min())
             y_max = max(y_max, fcast["yhat"].max())
+            try:
+                x_max_date = max(x_max_date, pd.to_datetime(fcast["ds"], errors="coerce").max()) if x_max_date is not None else pd.to_datetime(fcast["ds"], errors="coerce").max()
+            except Exception:
+                pass
         fdf = res.get("future_df")
         if fdf is not None and not fdf.empty:
             try:
@@ -56,6 +83,10 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
                 pass
             y_min = min(y_min, fdf["yhat"].min())
             y_max = max(y_max, fdf["yhat"].max())
+            try:
+                x_max_date = max(x_max_date, pd.to_datetime(fdf["ds"], errors="coerce").max()) if x_max_date is not None else pd.to_datetime(fdf["ds"], errors="coerce").max()
+            except Exception:
+                pass
     # Also consider single future_df if passed explicitly
     if future_df is not None and not future_df.empty:
         y_min = min(y_min, future_df["yhat"].min())
@@ -77,9 +108,8 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     names_in_plot = []
     for res in results:
         name = res.get("name")
-        if visible_models is not None and name not in visible_models:
-            continue
-        if visible_models is None and hide_non_chosen_models and best_name is not None and name != best_name:
+        # Include if visible for test or prediction
+        if name not in visible_test_models and name not in visible_pred_models:
             continue
         names_in_plot.append(name)
 
@@ -92,13 +122,11 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     ax.plot(visible_series["ds"], visible_series["y"], linewidth=2, alpha=0.85,
             color="#222", label="Actual")
 
-    # Plot each model's forecast
+    # Plot each model's test forecast
     for res in results:
-        # Respect explicit per-model visibility first
-        if visible_models is not None and res["name"] not in visible_models:
-            continue
-        # Optionally skip non-chosen models if no explicit visibility provided
-        if visible_models is None and hide_non_chosen_models and best_name is not None and res["name"] != best_name:
+        name = res["name"]
+        # Only show test performance if model is visible for test
+        if name not in visible_test_models:
             continue
 
         forecast_df = res["forecast_df"]
@@ -137,6 +165,26 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             label=label,
         )
 
+    # Overlay simple fitted trend line if provided
+    try:
+        if trend_series is not None and isinstance(trend_series, pd.DataFrame) and not trend_series.empty:
+            ts = trend_series.copy()
+            if not pd.api.types.is_datetime64_any_dtype(ts["ds"]):
+                ts["ds"] = pd.to_datetime(ts["ds"], errors="coerce")
+            ts["ds"] = ts["ds"].dt.normalize()
+            # When show_only_test and split_ds provided, only show trend from split onward
+            if show_only_test and split_ds is not None:
+                ts = ts[ts["ds"] >= pd.to_datetime(split_ds)].reset_index(drop=True)
+            # Cap trend at the latest actually visible date (actuals or predictions)
+            try:
+                if x_max_date is not None:
+                    ts = ts[ts["ds"] <= pd.to_datetime(x_max_date)].reset_index(drop=True)
+            except Exception:
+                pass
+            ax.plot(ts["ds"], ts["trend"], color="#555", linewidth=2.0, alpha=0.7, label="Trend")
+    except Exception:
+        pass
+
     # Plot future predictions. Prefer per-model forecasts if present; otherwise use single future_df
     has_per_model_future = any((res.get("future_df") is not None and not res.get("future_df").empty) for res in results)
     if has_per_model_future:
@@ -144,11 +192,9 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             visible_series.dropna(subset=["y"]).sort_values("ds").tail(1)
         )
         for res in results:
-            # Respect explicit per-model visibility first
-            if visible_models is not None and res["name"] not in visible_models:
-                continue
-            # Optionally skip non-chosen models if no explicit visibility provided
-            if visible_models is None and hide_non_chosen_models and best_name is not None and res["name"] != best_name:
+            name = res["name"]
+            # Only show predictions if model is visible for predictions
+            if name not in visible_pred_models:
                 continue
             fdf = res.get("future_df")
             if fdf is None or fdf.empty:

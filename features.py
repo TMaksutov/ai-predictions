@@ -83,9 +83,6 @@ def detect_seasonal_periods(y: np.ndarray, max_period: int = 400, top_n: int = 3
     return periods[:top_n]
 
 
-# Note: Fourier terms functionality removed to simplify the feature engineering pipeline
-
-
 def sanitize_feature_token(token: str) -> str:
     """Sanitize category/label tokens for safe column names."""
     if token is None:
@@ -136,6 +133,10 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
     """
     df = series_df.copy()
     df = df.sort_values("ds").reset_index(drop=True)
+    # Light coercion for POC robustness
+    df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
+    df["y"] = pd.to_numeric(df["y"], errors="coerce")
+    df = df[df["ds"].notna()].reset_index(drop=True)
 
     # Respect data length when adding long lags / windows to avoid empty training after dropna
     n_rows = int(len(df))
@@ -152,9 +153,14 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
     for window in used_ma_windows:
         df[f"ma{window}"] = df["y"].rolling(window=window, min_periods=1).mean().shift(1)
 
-    # DOW one-hot
+    # DOW one-hot (stable 0..6 columns)
     df["dow"] = df["ds"].dt.dayofweek.astype(int)
     dow_dummies = pd.get_dummies(df["dow"], prefix="dow", drop_first=False)
+    for i in range(7):
+        col = f"dow_{i}"
+        if col not in dow_dummies.columns:
+            dow_dummies[col] = 0
+    dow_dummies = dow_dummies[[f"dow_{i}" for i in range(7)]]
 
     # Global linear trend (days since start)
     df["trend"] = (df["ds"] - df["ds"].min()).dt.days.astype(int)
@@ -223,8 +229,9 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
 
     # Exogenous features - exclude time series features we've already created
     exog_exclude = {"dow", "trend"}
-    exog_exclude.update([f"lag{lag}" for lag in LAG_PERIODS])
-    exog_exclude.update([f"ma{window}" for window in MOVING_AVERAGE_WINDOWS])
+    exog_exclude.update([f"lag{lag}" for lag in used_lags])
+    exog_exclude.update([f"ma{window}" for window in used_ma_windows])
+    exog_exclude.update(list(fourier_cols))
     exog_cols = [c for c in df.columns if c not in ["ds", "y"] and c not in exog_exclude]
     num_exog_numeric = 0
     num_exog_categorical = 0
@@ -299,6 +306,7 @@ def build_features_internal(series_df: pd.DataFrame, return_info: bool = False) 
         "used_ma_windows": used_ma_windows,
         "fourier_periods_fixed": base_periods,
         "fourier_periods_detected": detected_periods,
+        "fourier_periods_used": used_fourier_periods,
         "fourier_harmonics": int(FOURIER_HARMONICS),
         "fourier_total_terms": int(len(fourier_cols)),
     }
@@ -347,6 +355,7 @@ def build_base_row_for_date(
     values: List[float] = []
     trend_val = int((pd.Timestamp(target_ds) - pd.Timestamp(start_ds)).days)
     y_series = hist_df["y"].astype(float)
+    y_len = int(len(y_series))
     for col in base_cols:
         if col == "trend":
             values.append(float(trend_val))
@@ -376,7 +385,12 @@ def build_base_row_for_date(
             except Exception:
                 lag_k = 1
             idx = -lag_k
-            val = float(y_series.iloc[idx]) if len(y_series) >= abs(idx) else float(y_series.iloc[-1])
+            if y_len >= abs(idx):
+                val = float(y_series.iloc[idx])
+            elif y_len > 0:
+                val = float(y_series.iloc[-1])
+            else:
+                val = 0.0
             values.append(val)
             continue
         if col.startswith("ma"):
@@ -385,8 +399,11 @@ def build_base_row_for_date(
             except Exception:
                 window = 7
             window = max(1, window)
-            tail = y_series.tail(window)
-            values.append(float(tail.mean()))
+            if y_len > 0:
+                tail = y_series.tail(window)
+                values.append(float(tail.mean()))
+            else:
+                values.append(0.0)
             continue
         if col.startswith("x_") or col.startswith("m_"):
             # Exogenous placeholders (if present in base_cols, will be appended separately via schema)
