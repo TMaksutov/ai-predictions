@@ -22,7 +22,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         visible_test_models: Models to show test performance for
         visible_pred_models: Models to show predictions for
     """
-    fig, ax = plt.subplots(figsize=(20, 6))
+    fig, ax = plt.subplots(figsize=(20, 4.5))
     
     # Handle backward compatibility
     if visible_test_models is None and visible_pred_models is None and visible_models is not None:

@@ -561,53 +561,102 @@ try:
             results_df = pd.DataFrame(table_data)
 
             with table_container:
-                # Create column configuration
-                column_config = {
-                    "Show": st.column_config.CheckboxColumn(
-                        "Show",
-                        help="Display this model's test and prediction lines (if available)",
-                        default=False,
-                    ),
-                    "Model": st.column_config.TextColumn(
-                        "Model",
-                        disabled=True,
-                    ),
-                    f"{METRIC_NAME}": st.column_config.TextColumn(
-                        f"{METRIC_NAME}",
-                        disabled=True,
-                    ),
-                    "Accuracy (%)": st.column_config.TextColumn(
-                        "Accuracy (%)",
-                        help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
-                        disabled=True,
-                    ),
-                    "Train (s)": st.column_config.TextColumn(
-                        "Train (s)",
-                        disabled=True,
-                    ),
-                    "Test (s)": st.column_config.TextColumn(
-                        "Test (s)",
-                        help="Time to predict on test data during benchmarking",
-                        disabled=True,
-                    ),
-                    "Predict (s)": st.column_config.TextColumn(
-                        "Predict (s)",
-                        help="Time to predict future values (only computed for top 3 models)",
-                        disabled=True,
-                    ),
-                }
+                # Create two columns: table on the left, scatter plot on the right
+                col1, col2 = st.columns([2, 1])  # Table takes 2/3 width, plot takes 1/3
                 
-                # For models not in top 3, disable the prediction checkbox by making it read-only
-                # We'll handle this in the processing logic instead of using disabled parameter
-                edited_df = st.data_editor(
-                    results_df,
-                    width="stretch",
-                    hide_index=True,
-                    column_config=column_config,
-                    key="model_table_editor"
-                )
-
-            
+                with col1:
+                    # Create column configuration
+                    column_config = {
+                        "Show": st.column_config.CheckboxColumn(
+                            "Show",
+                            help="Display this model's test and prediction lines (if available)",
+                            default=False,
+                        ),
+                        "Model": st.column_config.TextColumn(
+                            "Model",
+                            disabled=True,
+                        ),
+                        f"{METRIC_NAME}": st.column_config.TextColumn(
+                            f"{METRIC_NAME}",
+                            disabled=True,
+                        ),
+                        "Accuracy (%)": st.column_config.TextColumn(
+                            "Accuracy (%)",
+                            help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
+                            disabled=True,
+                        ),
+                        "Train (s)": st.column_config.TextColumn(
+                            "Train (s)",
+                            disabled=True,
+                        ),
+                        "Test (s)": st.column_config.TextColumn(
+                            "Test (s)",
+                            help="Time to predict on test data during benchmarking",
+                            disabled=True,
+                        ),
+                        "Predict (s)": st.column_config.TextColumn(
+                            "Predict (s)",
+                            help="Time to predict future values (only computed for top 3 models)",
+                            disabled=True,
+                        ),
+                    }
+                    
+                    # For models not in top 3, disable the prediction checkbox by making it read-only
+                    # We'll handle this in the processing logic instead of using disabled parameter
+                    edited_df = st.data_editor(
+                        results_df,
+                        hide_index=True,
+                        column_config=column_config,
+                        key="model_table_editor"
+                    )
+                
+                with col2:
+                    # Small scatter plot: Accuracy vs Time
+                    try:
+                        df = pd.DataFrame([
+                            {
+                                "Model": (n := r.get("name", "")),
+                                "ShortName": str(n).split(" ")[0],
+                                "Accuracy (%)": (max(0.0, 100.0 - float(r.get("mape")) * 100.0) if pd.notna(r.get("mape")) else None),
+                                "Time (s)": float(r.get("train_time_s", 0.0) or 0.0) + float(r.get("predict_time_s", 0.0) or 0.0),
+                                "Top3": n in top_models_set,
+                            }
+                            for r in results
+                        ]).dropna(subset=["Accuracy (%)"]) 
+                        if not df.empty:
+                            st.vega_lite_chart(
+                                df,
+                                {
+                                    "width": 400, "height": 400,  # Smaller size to fit in column
+                                    "layer": [
+                                        {
+                                            "mark": {"type": "point", "filled": True, "size": 60},
+                                            "encoding": {
+                                                "x": {"field": "Time (s)", "type": "quantitative", "title": "Time (s)"},
+                                                "y": {"field": "Accuracy (%)", "type": "quantitative", "title": "Accuracy (%)", "scale": {"zero": False}},
+                                                "color": {"field": "Top3", "type": "nominal", "scale": {"domain": [True, False], "range": ["#d62728", "#bbbbbb"]}, "legend": None},
+                                                "tooltip": [
+                                                    {"field": "Model", "type": "nominal"},
+                                                    {"field": "Accuracy (%)", "type": "quantitative", "format": ".3f"},
+                                                    {"field": "Time (s)", "type": "quantitative", "format": ".1f"}
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            "transform": [{"filter": "datum.Top3"}],
+                                            "mark": {"type": "text", "align": "left", "dx": 6, "dy": -6, "fontSize": 11, "color": "#d62728"},
+                                            "encoding": {
+                                                "x": {"field": "Time (s)", "type": "quantitative"},
+                                                "y": {"field": "Accuracy (%)", "type": "quantitative", "scale": {"zero": False}},
+                                                "text": {"field": "ShortName", "type": "nominal"}
+                                            }
+                                        }
+                                    ]
+                                },
+                                use_container_width=False,
+                            )
+                    except:
+                        pass
 
             for _, row in edited_df.iterrows():
                 model_display = row["Model"]
