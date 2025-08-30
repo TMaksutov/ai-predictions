@@ -40,8 +40,8 @@ st.markdown(
     <style>
         .block-container { padding: 1rem; margin: 1rem; }
         header[data-testid="stHeader"] { height: 20px; }
-        [data-testid="stSidebar"] { min-width: 500px; max-width: 500px; }
-        [data-testid="stSidebar"] > div:first-child { min-width: 500px; max-width: 500px; }
+        [data-testid="stSidebar"] { min-width: 450px; max-width: 450px; }
+        [data-testid="stSidebar"] > div:first-child { min-width: 450px; max-width: 450px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -138,7 +138,7 @@ st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 12px 0; text-alig
 
 # Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
-    "Upload a CSV or Excel file (date column first, target last, 1MB max)",
+    "Upload a CSV or Excel file (date column first, target last, < 1MB)",
     type=["csv", "xlsx", "xls"],
     accept_multiple_files=False,
     help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 1MB; maximum rows: 10,000"
