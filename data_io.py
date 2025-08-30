@@ -102,9 +102,9 @@ def load_data_with_checklist(file_obj_or_path, progress_callback=None):
     def check_file_size(size_bytes):
         """Check file size and return error if too large"""
         size_mb = size_bytes / (1024 * 1024)
-        if size_mb >= 10:
-            error_msg = f"File too large: {size_mb:.1f} MB (max 10MB)"
-            add_check("error", f"File too large: {format_file_size(size_bytes)} (max 10MB)")
+        if size_mb >= 1:
+            error_msg = f"File too large: {size_mb:.1f} MB (max 1MB)"
+            add_check("error", f"File too large: {format_file_size(size_bytes)} (max 1MB)")
             return error_msg
         add_check("ok", f"File size: {format_file_size(size_bytes)}")
         return None
@@ -184,6 +184,9 @@ def load_data_with_checklist(file_obj_or_path, progress_callback=None):
         if len(df) == 0:
             add_check("error", "No data rows found")
             return early_return_error("Empty dataset")
+        elif len(df) > 10000:
+            add_check("error", f"Too many rows: {len(df)} (max 10000)")
+            return early_return_error("Dataset exceeds 10,000 rows limit")
         add_check("ok", f"{len(df)} rows loaded")
         
         if len(df.columns) == 0:

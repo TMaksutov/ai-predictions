@@ -138,10 +138,10 @@ st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 12px 0; text-alig
 
 # Data loading - simplified using utility functions
 uploaded = st.sidebar.file_uploader(
-    "Upload a CSV or Excel file (date column first, target last, 10MB max)",
+    "Upload a CSV or Excel file (date column first, target last, 1MB max)",
     type=["csv", "xlsx", "xls"],
     accept_multiple_files=False,
-    help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 10MB"
+    help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 1MB; maximum rows: 10,000"
 )
 
 # Cache sample file bytes to avoid disk I/O on every cold start
