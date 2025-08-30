@@ -84,7 +84,7 @@ def _seed_default_models_if_empty() -> None:
     # Trees / ensembles (trim heavy variants)
     register_model("AdaBoost (n_estimators=100)", lambda: AdaBoostRegressor(random_state=42, n_estimators=100, learning_rate=0.1))
     register_model("GB (n_estimators=100)", lambda: GradientBoostingRegressor(random_state=42, n_estimators=100, max_depth=3))
-    register_model("RF (n_estimators=200)", lambda: RandomForestRegressor(random_state=42, n_estimators=200, max_depth=8, n_jobs=-1))
+    register_model("RF (n_estimators=100)", lambda: RandomForestRegressor(random_state=42, n_estimators=100, max_depth=7, n_jobs=-1))
     # Robust linear
     register_model("Huber (epsilon=1.35)", lambda: Pipeline([("scaler", StandardScaler()), ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4))]))
     # Additional models for better coverage
