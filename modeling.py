@@ -8,14 +8,20 @@ from sklearn.linear_model import (
     ElasticNet,
     HuberRegressor,
     BayesianRidge,
+    TheilSenRegressor,
+    RANSACRegressor,
+    PassiveAggressiveRegressor,
+    SGDRegressor,
 )
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import (
     GradientBoostingRegressor,
     RandomForestRegressor,
-    ExtraTreesRegressor,
     AdaBoostRegressor,
 )
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.svm import SVR, LinearSVR
+from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -76,57 +82,29 @@ def _seed_default_models_if_empty() -> None:
     # Neighbors
     register_model("KNN (n_neighbors=7)", lambda: KNeighborsRegressor(n_neighbors=7))
     # Trees / ensembles (trim heavy variants)
-    register_model("ExtraTrees (n_estimators=100)", lambda: ExtraTreesRegressor(random_state=42, n_estimators=100, n_jobs=-1))
     register_model("AdaBoost (n_estimators=100)", lambda: AdaBoostRegressor(random_state=42, n_estimators=100, learning_rate=0.1))
     register_model("GB (n_estimators=100)", lambda: GradientBoostingRegressor(random_state=42, n_estimators=100, max_depth=3))
     register_model("RF (n_estimators=200)", lambda: RandomForestRegressor(random_state=42, n_estimators=200, max_depth=8, n_jobs=-1))
     # Robust linear
-    register_model(
-        "Huber (epsilon=1.35)",
-        lambda: Pipeline([
-            ("scaler", StandardScaler()),
-            ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4)),
-        ]),
-    )
+    register_model("Huber (epsilon=1.35)", lambda: Pipeline([("scaler", StandardScaler()), ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4))]))
+    # Additional models for better coverage
+    register_model("DecisionTree", lambda: DecisionTreeRegressor(random_state=42, max_depth=10))
+    register_model("SVR (RBF)", lambda: Pipeline([("scaler", StandardScaler()), ("model", SVR(kernel='rbf', C=1.0, gamma='scale'))]))
+    register_model("SVR (Linear)", lambda: Pipeline([("scaler", StandardScaler()), ("model", SVR(kernel='linear', C=1.0))]))
+    register_model("LinearSVR", lambda: Pipeline([("scaler", StandardScaler()), ("model", LinearSVR(max_iter=5000, tol=1e-4))]))
+    # Removed TheilSen and RANSACRegressor from default registry per user request
+    register_model("PassiveAggressive", lambda: Pipeline([("scaler", StandardScaler()), ("model", PassiveAggressiveRegressor(random_state=42, max_iter=1000))]))
+    register_model("SGD", lambda: Pipeline([("scaler", StandardScaler()), ("model", SGDRegressor(random_state=42, max_iter=1000, tol=1e-3))]))
+    # Removed MLPRegressor from default registry per user request
 
 # Seed defaults on import so registry always has baseline models
 _seed_default_models_if_empty()
-
-def ensure_daily_frequency(series_df: pd.DataFrame) -> None:
-    if series_df.empty:
-        raise ValueError("Empty series provided")
-    series_df = series_df.sort_values("ds").reset_index(drop=True)
-    # Quick accept when pandas can infer daily frequency
-    try:
-        inferred = pd.infer_freq(series_df["ds"])    
-        if inferred == "D":
-            return
-    except Exception:
-        inferred = None
-    # Verify manually that all diffs are exactly 1 day (allow small tolerance like in validation)
-    try:
-        s = pd.to_datetime(series_df["ds"], errors="coerce").dropna()
-        diffs = s.diff().dropna()
-        # If there's fewer than 2 timestamps, treat as valid
-        if diffs.empty:
-            return
-        one_day = (diffs == pd.Timedelta(days=1))
-        if one_day.all() or (one_day.mean() >= 0.95):
-            return
-    except Exception:
-        # If we cannot compute diffs reliably, let earlier validation gate this instead of blocking here
-        return
-    raise ValueError(
-        "Dataset must be daily frequency with regular 1-day intervals. "
-        "Detected irregular timestamps. Please ensure no gaps/duplicates."
-    )
-
-
+ 
 # Removed Linear regression compatibility wrapper
 
 class UnifiedTimeSeriesTrainer:
     """
-    Unified architecture for consistent training and retraining of time series models.
+    Unified architecture for consistent training and retraining of time series models. 
     Ensures the same feature engineering, data preprocessing, and model configuration
     across all training scenarios.
     """
@@ -162,11 +140,6 @@ class UnifiedTimeSeriesTrainer:
         """
         if series_df.shape[0] < MIN_TRAINING_ROWS:
             raise ValueError("Insufficient data (need at least 10 rows)")
-        # Trust earlier validation; do not hard-stop the flow here
-        try:
-            ensure_daily_frequency(series_df)
-        except Exception:
-            pass
 
         # Prepare sorted data and split boundary
         sorted_df = series_df.sort_values("ds").reset_index(drop=True)
@@ -407,11 +380,6 @@ def get_fast_estimators() -> List[Tuple[str, BaseEstimator]]:
 def train_on_known_and_forecast_missing(full_df: pd.DataFrame, estimator, future_rows: pd.DataFrame) -> pd.DataFrame:
     if full_df.shape[0] < 10:
         raise ValueError("Insufficient data (need at least 10 rows)")
-    # Trust earlier validation; do not hard-stop the flow here
-    try:
-        ensure_daily_frequency(full_df)
-    except Exception:
-        pass
 
     if "ds" not in future_rows.columns:
         raise ValueError("future_rows must include a 'ds' column")
