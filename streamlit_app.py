@@ -1,4 +1,10 @@
 from pathlib import Path
+import sys
+
+# Ensure project root is on sys.path for module imports in various runtimes
+_APP_DIR = Path(__file__).parent
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
 
 import pandas as pd
 import streamlit as st
