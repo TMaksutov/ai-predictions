@@ -10,10 +10,10 @@ import pandas as pd
 import streamlit as st
 from modeling import get_fast_estimators
 from modeling import train_on_known_and_forecast_missing, UnifiedTimeSeriesTrainer
-from features import build_features as _build_features
+
 from data_io import load_data_with_checklist
-from data_utils import load_default_dataset, prepare_series_from_dataframe, get_future_rows
-from plot_utils import create_forecast_plot, create_results_table
+from data_utils import prepare_series_from_dataframe, get_future_rows
+from plot_utils import create_forecast_plot
 from trend import fit_trend
 import io
 import uuid
@@ -92,41 +92,13 @@ def _ga_track(event_name, params=None):
         # Never raise in UI; analytics is best-effort only
         pass
 
-def run_benchmark(series_df: pd.DataFrame, test_fraction: float = None):
-    if test_fraction is None:
-        try:
-            from config import DEFAULT_TEST_FRACTION
-            test_fraction = DEFAULT_TEST_FRACTION
-        except ImportError:
-            test_fraction = 0.2
-
-    trainer = UnifiedTimeSeriesTrainer()
-    return trainer.benchmark_models(series_df, test_fraction=test_fraction)
 
 
-# Helper functions for model selection
-def _base_model_type(model_name: str) -> str:
-    """Extract base type from a model name by trimming trailing digits."""
-    try:
-        # Normalize name: strip spaces and remove optional "+Trend" suffix
-        model_name = str(model_name).replace("+Trend", "").strip()
-        for idx, ch in enumerate(model_name):
-            if ch.isdigit():
-                return model_name[:idx] or model_name
-        return model_name
-    except Exception:
-        return str(model_name)
 
 
-def _pick_top_models(results: list, max_models: int = 3) -> list:
-    """Pick the top-N models by RMSE (lower is better)."""
-    try:
-        # Sort by RMSE in ascending order (lowest RMSE first)
-        ordered = sorted(results, key=lambda x: x.get("rmse", float('inf')))
-        names = [r.get("name") for r in ordered if r.get("name")]
-        return names[:max_models]
-    except Exception:
-        return []
+
+
+
 
 
  # -----------------------------
@@ -206,12 +178,7 @@ except Exception:
 
 # Dataset name caption removed per user request
 
-def _render_checklist(items):
-    with progress_container:
-        st.markdown(f"<div style='font-weight:600; margin:6px 0 3px 0'>Validation Checklist</div>", unsafe_allow_html=True)
-        for status, text in items:
-            icon = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
-            st.markdown(f"<div style='margin:2px 0; line-height:1.2'>{icon} {text}</div>", unsafe_allow_html=True)
+
 
 # Persisted UI defaults for display controls
 for _key, _default in [
@@ -252,6 +219,8 @@ is_valid = len(raw_df) > 0 and not file_info.get("error")
 
 # Main screen header
 st.markdown("<div style='font-weight:600; margin:12px 0 18px 0; text-align:center; font-size:24px'>Prediction Models Benchmark and Forecast</div>", unsafe_allow_html=True)
+
+
 
 try:
     if len(series) < 10:
@@ -334,7 +303,12 @@ try:
         plot_container = st.container()
         table_container = st.container()
         # Compute top 3 models by RMSE (lower is better)
-        top_models = _pick_top_models(results, max_models=3)
+        try:
+            # Sort by RMSE in ascending order (lowest RMSE first)
+            ordered = sorted(results, key=lambda x: x.get("rmse", float('inf')))
+            top_models = [r.get("name") for r in ordered if r.get("name")][:3]
+        except Exception:
+            top_models = []
         top_models_set = set(top_models)
         # top_index_set is no longer needed since we use top_models_set based on model names
         if best_name is not None:

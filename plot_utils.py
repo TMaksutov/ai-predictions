@@ -277,18 +277,6 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     return fig
 
 
-def create_results_table(results: list, metric_name: str = "RMSE"):
-    """Create a formatted results table from benchmark results."""
-    table_rows = []
-    for r in results:
-        table_rows.append({
-            "Model": r["name"],
-            metric_name: r.get("rmse", None),
-            "Train (s)": r.get("train_time_s", None),
-            "Predict (s)": r.get("predict_time_s", None)
-        })
 
-    table_df = pd.DataFrame(table_rows).sort_values(metric_name).reset_index(drop=True)
-    return table_df
 
 

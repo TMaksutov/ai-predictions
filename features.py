@@ -321,9 +321,7 @@ def build_features(series_df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
     return features, feature_cols
 
 
-def analyze_preprocessing(series_df: pd.DataFrame) -> Dict[str, object]:
-    _, _, info = build_features_internal(series_df, return_info=True)
-    return info
+
 
 
 def select_base_feature_columns(all_columns: List[str]) -> List[str]:

@@ -8,26 +8,20 @@ from sklearn.linear_model import (
     ElasticNet,
     HuberRegressor,
     BayesianRidge,
-    TheilSenRegressor,
-    RANSACRegressor,
     PassiveAggressiveRegressor,
     SGDRegressor,
 )
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import (
     GradientBoostingRegressor,
-    RandomForestRegressor,
-    AdaBoostRegressor,
 )
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.svm import SVR, LinearSVR
-from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from sklearn.base import BaseEstimator, clone
 import time
-from sklearn.metrics import mean_absolute_percentage_error
 
 from features import (
     build_features_internal,
@@ -82,9 +76,7 @@ def _seed_default_models_if_empty() -> None:
     # Neighbors
     register_model("KNN (n_neighbors=7)", lambda: KNeighborsRegressor(n_neighbors=7))
     # Trees / ensembles (trim heavy variants)
-    # register_model("AdaBoost (n_estimators=100)", lambda: AdaBoostRegressor(random_state=42, n_estimators=100, learning_rate=0.1))
     register_model("GB (n_estimators=100)", lambda: GradientBoostingRegressor(random_state=42, n_estimators=100, max_depth=3))
-    # register_model("RF (n_estimators=100)", lambda: RandomForestRegressor(random_state=42, n_estimators=100, max_depth=7, n_jobs=-1))
     # Robust linear
     register_model("Huber (epsilon=1.35)", lambda: Pipeline([("scaler", StandardScaler()), ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4))]))
     # Additional models for better coverage
@@ -92,10 +84,8 @@ def _seed_default_models_if_empty() -> None:
     register_model("SVR (RBF)", lambda: Pipeline([("scaler", StandardScaler()), ("model", SVR(kernel='rbf', C=1.0, gamma='scale'))]))
     register_model("SVR (Linear)", lambda: Pipeline([("scaler", StandardScaler()), ("model", SVR(kernel='linear', C=1.0))]))
     register_model("LinearSVR", lambda: Pipeline([("scaler", StandardScaler()), ("model", LinearSVR(max_iter=5000, tol=1e-4))]))
-    # Removed TheilSen and RANSACRegressor from default registry per user request
     register_model("PassiveAggressive", lambda: Pipeline([("scaler", StandardScaler()), ("model", PassiveAggressiveRegressor(random_state=42, max_iter=1000))]))
     register_model("SGD", lambda: Pipeline([("scaler", StandardScaler()), ("model", SGDRegressor(random_state=42, max_iter=1000, tol=1e-3))]))
-    # Removed MLPRegressor from default registry per user request
 
 # Seed defaults on import so registry always has baseline models
 _seed_default_models_if_empty()

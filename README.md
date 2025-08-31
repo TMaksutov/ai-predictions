@@ -3,7 +3,7 @@
 Lightweight app to benchmark fast scikit‑learn regressors on daily data and forecast missing tail values. Includes a compact plot and results table.
 
 ### Features
-- Fast regressors (+ optional linear/quadratic trend): Ridge, Lasso, ElasticNet, KNN, GradientBoosting, RandomForest, SVR, DecisionTree, BayesianRidge, Huber, PassiveAggressive, SGD
+- Fast regressors (+ optional linear/quadratic trend): Ridge, Lasso, ElasticNet, KNN, GradientBoosting, SVR, DecisionTree, BayesianRidge, Huber, PassiveAggressive, SGD
 - Feature engineering: lags, moving averages, day‑of‑week, auto‑detected Fourier seasonality
 - Metric: RMSE on the last 20% split
 

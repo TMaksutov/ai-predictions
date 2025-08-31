@@ -140,52 +140,12 @@ def detect_datetime_format(sample: List[str], max_samples: int = 200) -> Optiona
     return None
 
 
-def _strip_whitespace_df(df: pd.DataFrame) -> pd.DataFrame:
-    try:
-        out = df.copy()
-        for col in out.columns:
-            if out[col].dtype == object:
-                out[col] = out[col].astype(str).map(lambda x: x.strip())
-        return out
-    except Exception:
-        return df
 
 
-def _standardize_missing_tokens_df(df: pd.DataFrame) -> pd.DataFrame:
-    tokens = {"", "na", "n/a", "nan", "null", "none", "-", "?", "—"}
-    out = df.copy()
-    try:
-        for col in out.columns:
-            if out[col].dtype == object:
-                out[col] = out[col].astype(str)
-                out[col] = out[col].map(lambda x: pd.NA if x.strip().lower() in tokens else x)
-        return out
-    except Exception:
-        return df
 
 
-def _normalize_dates_to_day(series: pd.Series, date_format: Optional[str] = None) -> pd.Series:
-    try:
-        if date_format:
-            parsed = pd.to_datetime(series, errors="coerce", format=date_format)
-        else:
-            parsed = None
-            # First try pandas mixed parser
-            try:
-                parsed = pd.to_datetime(series, errors="coerce", format="mixed")
-            except Exception:
-                parsed = None
-            # If still missing values or parsing failed, try day-first heuristic
-            if parsed is None or parsed.isna().any():
-                try:
-                    parsed = pd.to_datetime(series, errors="coerce", dayfirst=True)
-                except Exception:
-                    parsed = None
-            # Final plain fallback
-            if parsed is None:
-                parsed = pd.to_datetime(series, errors="coerce")
-        return parsed.dt.normalize()
-    except Exception:
-        return pd.to_datetime([pd.NA] * len(series), errors="coerce")
+
+
+
 
 

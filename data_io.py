@@ -334,24 +334,6 @@ def load_data_with_checklist(file_obj_or_path, progress_callback=None):
         info["checklist"] = checklist
         return pd.DataFrame(), info
 
-# ======================== Validation checklist display function ========================
 
-def validate_data_with_checklist(df, file_info):
-    
-    # Get checklist from loading process
-    if "checklist" in file_info:
-        checklist = file_info["checklist"]
-    else:
-        checklist = [("info", "No validation data available")]
-    
-    # Add final summary status
-    if file_info.get("error"):
-        return checklist, False
-    elif len(df) > 0:
-        checklist.append(("ok", f"Dataset ready: {df.shape[0]} rows × {df.shape[1]} columns"))
-        return checklist, True
-    else:
-        checklist.append(("error", "No data to process"))
-        return checklist, False
 
 
