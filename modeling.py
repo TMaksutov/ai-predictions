@@ -82,9 +82,9 @@ def _seed_default_models_if_empty() -> None:
     # Neighbors
     register_model("KNN (n_neighbors=7)", lambda: KNeighborsRegressor(n_neighbors=7))
     # Trees / ensembles (trim heavy variants)
-    register_model("AdaBoost (n_estimators=100)", lambda: AdaBoostRegressor(random_state=42, n_estimators=100, learning_rate=0.1))
+    # register_model("AdaBoost (n_estimators=100)", lambda: AdaBoostRegressor(random_state=42, n_estimators=100, learning_rate=0.1))
     register_model("GB (n_estimators=100)", lambda: GradientBoostingRegressor(random_state=42, n_estimators=100, max_depth=3))
-    register_model("RF (n_estimators=100)", lambda: RandomForestRegressor(random_state=42, n_estimators=100, max_depth=7, n_jobs=-1))
+    # register_model("RF (n_estimators=100)", lambda: RandomForestRegressor(random_state=42, n_estimators=100, max_depth=7, n_jobs=-1))
     # Robust linear
     register_model("Huber (epsilon=1.35)", lambda: Pipeline([("scaler", StandardScaler()), ("model", HuberRegressor(epsilon=1.35, max_iter=5000, tol=1e-4))]))
     # Additional models for better coverage
@@ -142,12 +142,27 @@ class UnifiedTimeSeriesTrainer:
             raise ValueError("Insufficient data (need at least 10 rows)")
 
         # Prepare sorted data and split boundary
+        # Split on known data only - missing values at the end are for prediction, not evaluation
         sorted_df = series_df.sort_values("ds").reset_index(drop=True)
-        n = len(sorted_df)
-        test_size = max(1, int(n * test_fraction))
-        test_start_ds = sorted_df.iloc[-test_size]["ds"]
-        train_df = sorted_df[sorted_df["ds"] < test_start_ds].reset_index(drop=True)
-        test_df_raw = sorted_df[sorted_df["ds"] >= test_start_ds].reset_index(drop=True)
+        
+        # Filter to only known data (with valid targets) for proper train/test split
+        known_data = sorted_df[sorted_df["y"].notna()].reset_index(drop=True)
+        n_known = len(known_data)
+        
+        if n_known < MIN_TRAINING_ROWS:
+            raise ValueError(f"Insufficient known data (need at least {MIN_TRAINING_ROWS} rows with valid targets)")
+        
+        # Calculate test size based on known data
+        test_size = max(1, int(n_known * test_fraction))
+        
+        # Split known data into train and test
+        train_end_idx = n_known - test_size
+        train_df = known_data.iloc[:train_end_idx].reset_index(drop=True)
+        test_df_raw = known_data.iloc[train_end_idx:].reset_index(drop=True)
+        
+        # Verify we have valid test data
+        if test_df_raw.empty:
+            raise ValueError("No valid test data available after split")
 
         # Build features ONLY on the training slice to avoid leakage
         features_train, feature_cols_all, info = build_features_internal(train_df, return_info=True)
@@ -277,29 +292,58 @@ class UnifiedTimeSeriesTrainer:
                             with np.errstate(divide='ignore', invalid='ignore'):
                                 abs_err = np.abs(y_test_arr - preds_arr)
                                 denom = np.abs(y_test_arr)
-                                mask = denom > 1e-12
-                                ratios = np.zeros_like(abs_err, dtype=float)
-                                ratios[mask] = abs_err[mask] / denom[mask]
-                                mape_val = float(np.nanmean(ratios)) if np.any(mask) else None
+                                # Simple, stable MAPE calculation
+                                mask = denom > 1e-10
+                                if np.any(mask):
+                                    ratios = abs_err[mask] / denom[mask]
+                                    mape_val = float(np.nanmean(ratios)) if np.any(np.isfinite(ratios)) else 0.0
+                                else:
+                                    mape_val = 0.0
                         except Exception:
-                            mape_val = None
+                            mape_val = 0.0
                         try:
                             with np.errstate(divide='ignore', invalid='ignore'):
                                 denom2 = (np.abs(y_test_arr) + np.abs(preds_arr))
-                                mask2 = denom2 > 1e-12
-                                smape_vals = np.zeros_like(y_test_arr, dtype=float)
-                                smape_vals[mask2] = (2.0 * np.abs(preds_arr[mask2] - y_test_arr[mask2])) / denom2[mask2]
-                                smape_val = float(np.nanmean(smape_vals)) if np.any(mask2) else None
+                                mask2 = denom2 > 1e-10
+                                if np.any(mask2):
+                                    smape_vals = (2.0 * np.abs(preds_arr[mask2] - y_test_arr[mask2])) / denom2[mask2]
+                                    smape_val = float(np.nanmean(smape_vals)) if np.any(np.isfinite(smape_vals)) else 0.0
+                                else:
+                                    smape_val = 0.0
                         except Exception:
-                            smape_val = None
+                            smape_val = 0.0
                     else:
                         rmse_val = float("inf")
-                        mape_val = None
-                        smape_val = None
+                        mape_val = 0.0
+                        smape_val = 0.0
 
                     forecast_df = pd.DataFrame({"ds": test_ds_vals, "yhat": preds_arr})
                     test_df = pd.DataFrame({"ds": test_ds_vals, "y": y_test_arr})
-                    return {"forecast_df": forecast_df, "test_df": test_df, "rmse": rmse_val, "mape": mape_val, "smape": smape_val}
+                    
+                    # Calculate range-based accuracy using test dataset values
+                    # Accuracy = 1 - (MAE / (max - min)) where max/min are from test dataset
+                    try:
+                        # Filter out NaN values for accurate calculation
+                        valid_mask = np.isfinite(y_test_arr) & np.isfinite(preds_arr)
+                        if np.any(valid_mask) and valid_mask.sum() > 0:
+                            y_test_valid = y_test_arr[valid_mask]
+                            preds_valid = preds_arr[valid_mask]
+                            
+                            # Find min and max values in test dataset
+                            min_val = np.min(y_test_valid)
+                            max_val = np.max(y_test_valid)
+                            value_range = max_val - min_val
+                            
+                            mean_abs_error = np.mean(np.abs(y_test_valid - preds_valid))
+                            # Calculate accuracy as 1 - (error/range)
+                            error_ratio = mean_abs_error / value_range
+                            accuracy_pct = max(0.0, min(100.0, (1.0 - error_ratio) * 100.0))
+                        else:
+                            accuracy_pct = 0.0
+                    except Exception:
+                        accuracy_pct = 0.0
+                    
+                    return {"forecast_df": forecast_df, "test_df": test_df, "rmse": rmse_val, "mape": mape_val, "smape": smape_val, "accuracy_pct": accuracy_pct}
 
                 # RAW evaluation
                 res_raw = _walk_forward(model_raw, add_trend=False)
@@ -311,6 +355,7 @@ class UnifiedTimeSeriesTrainer:
                     "rmse": res_raw["rmse"],
                     "mape": res_raw["mape"],
                     "smape": res_raw["smape"],
+                    "accuracy_pct": res_raw["accuracy_pct"],
                     "forecast_df": res_raw["forecast_df"],
                     "test_df": res_raw["test_df"],
                     "train_time_s": train_time_raw,
@@ -341,6 +386,7 @@ class UnifiedTimeSeriesTrainer:
                         "rmse": res_det["rmse"],
                         "mape": res_det["mape"],
                         "smape": res_det["smape"],
+                        "accuracy_pct": res_det["accuracy_pct"],
                         "forecast_df": res_det["forecast_df"],
                         "test_df": res_det["test_df"],
                         "train_time_s": train_time_det,
@@ -352,8 +398,9 @@ class UnifiedTimeSeriesTrainer:
                 results.append({
                     "name": name,
                     "rmse": float("inf"),
-                    "mape": None,
-                    "smape": None,
+                    "mape": 0.0,
+                    "smape": 0.0,
+                    "accuracy_pct": 0.0,
                     "forecast_df": pd.DataFrame(),
                     "test_df": pd.DataFrame(),
                     "train_time_s": None,

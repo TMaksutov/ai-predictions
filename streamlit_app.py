@@ -49,7 +49,6 @@ st.markdown(
 
 SAMPLE_PATH = Path(__file__).parent / "sample.csv"
 METRIC_NAME = "RMSE"
-BENCH_CACHE_VERSION = "trend_models_v1"
 
 # Utilities, I/O helpers, and checklist provided by: data_io.py, modeling.py, features.py
 
@@ -120,9 +119,10 @@ def _base_model_type(model_name: str) -> str:
 
 
 def _pick_top_models(results: list, max_models: int = 3) -> list:
-    """Pick the top-N models by RMSE (no uniqueness constraint)."""
+    """Pick the top-N models by RMSE (lower is better)."""
     try:
-        ordered = sorted(results, key=lambda x: x.get("rmse", float("inf")))
+        # Sort by RMSE in ascending order (lowest RMSE first)
+        ordered = sorted(results, key=lambda x: x.get("rmse", float('inf')))
         names = [r.get("name") for r in ordered if r.get("name")]
         return names[:max_models]
     except Exception:
@@ -144,16 +144,11 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 1MB; maximum rows: 10,000"
 )
 
-# Cache sample file bytes to avoid disk I/O on every cold start
-@st.cache_data(show_spinner=False)
-def _read_file_bytes_cached(path_str: str) -> bytes:
-    with open(path_str, "rb") as _fb:
-        return _fb.read()
-
 # Auto-load sample as a pseudo-upload on first load so it follows the same path
 if uploaded is None:
     try:
-        _sample_bytes = _read_file_bytes_cached(str(SAMPLE_PATH))
+        with open(str(SAMPLE_PATH), "rb") as _fb:
+            _sample_bytes = _fb.read()
         _auto_file = io.BytesIO(_sample_bytes)
         _auto_file.name = SAMPLE_PATH.name
         _auto_file.size = len(_sample_bytes)
@@ -301,19 +296,9 @@ try:
         except Exception:
             _trend_desc = None
 
-        # Cache benchmark results across sessions so first render is faster (especially for sample)
-        # Include a version and trend descriptor to avoid stale caches when logic changes
-        bench_key = f"{BENCH_CACHE_VERSION}|{_df_fingerprint(series_for_benchmark)}|test_frac={DEFAULT_TEST_FRACTION}|trend={_trend_desc}"
-
-        @st.cache_data(show_spinner=False)
-        def _benchmark_cached(series_df: pd.DataFrame, test_fraction: float, cache_version: str, trend_desc: str):
-            trainer = UnifiedTimeSeriesTrainer()
-            return trainer.benchmark_models(series_df, test_fraction=test_fraction)
-
         try:
-            with st.spinner("Training and evaluating models..."):
-                # cache_version and trend_desc are passed to ensure proper invalidation when logic changes
-                results = _benchmark_cached(series_for_benchmark, DEFAULT_TEST_FRACTION, BENCH_CACHE_VERSION, _trend_desc or "none")
+            trainer = UnifiedTimeSeriesTrainer()
+            results = trainer.benchmark_models(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
         except Exception as e:
             results = []
             st.error(f"Benchmark failed: {e}")
@@ -324,7 +309,7 @@ try:
                 baseline = []
             if baseline:
                 results = [
-                    {"name": n, "rmse": float("inf"), "mape": None,
+                    {"name": n, "rmse": float("inf"), "mape": None, "accuracy_pct": 0.0,
                      "forecast_df": pd.DataFrame(), "test_df": pd.DataFrame(),
                      "train_time_s": None, "predict_time_s": None,
                      "estimator_params": {}}
@@ -348,34 +333,39 @@ try:
         # Placeholders to control layout order: plot above, table below
         plot_container = st.container()
         table_container = st.container()
-        # Compute top 3 models by RMSE (no uniqueness constraint)
+        # Compute top 3 models by RMSE (lower is better)
         top_models = _pick_top_models(results, max_models=3)
         top_models_set = set(top_models)
-        top_index_set = set(range(min(3, len(results))))
+        # top_index_set is no longer needed since we use top_models_set based on model names
         if best_name is not None:
             # Initialize or reconcile visibility state with separate test/prediction controls
             available_models = [r["name"] for r in results]
+            
+            # Create a data fingerprint to detect when data changes (which affects top models)
+            data_fingerprint = _df_fingerprint(series)
+            current_data_key = st.session_state.get("current_data_key")
+            
+            # Force reset visibility state when data changes (new file, different dataset)
+            # This ensures that when switching between datasets or after code changes,
+            # the top 3 models by RMSE are always selected by default instead of
+            # persisting old selections from previous runs
+            if current_data_key != data_fingerprint:
+                st.session_state["test_visibility"] = None
+                st.session_state["pred_visibility"] = None
+                st.session_state["current_data_key"] = data_fingerprint
+            
             test_visibility = st.session_state.get("test_visibility")
             pred_visibility = st.session_state.get("pred_visibility")
-            prev_key = st.session_state.get("visibility_key")
             
             # Initialize test visibility (all models can be shown for test data)
             if (not isinstance(test_visibility, dict)) or (set(test_visibility.keys()) != set(available_models)):
                 test_visibility = {name: (name in top_models_set) for name in available_models}
                 st.session_state["test_visibility"] = test_visibility
-            elif prev_key != bench_key:
-                test_visibility = {name: (name in top_models_set) for name in available_models}
-                st.session_state["test_visibility"] = test_visibility
             
-            # Initialize prediction visibility (only top 3 models can be shown for predictions)
+            # Initialize prediction visibility (only top 3 models by RMSE can be shown for predictions)
             if (not isinstance(pred_visibility, dict)) or (set(pred_visibility.keys()) != set(available_models)):
                 pred_visibility = {name: (name in top_models_set) for name in available_models}
                 st.session_state["pred_visibility"] = pred_visibility
-            elif prev_key != bench_key:
-                pred_visibility = {name: (name in top_models_set) for name in available_models}
-                st.session_state["pred_visibility"] = pred_visibility
-            
-            st.session_state["visibility_key"] = bench_key
 
             # Apply any pending edits from the editor state so toggles reflect immediately on rerun
             try:
@@ -428,7 +418,7 @@ try:
                             model_to_future_time = {}
                             for idx, res in enumerate(results):
                                 model_name = res.get("name")
-                                if idx not in top_index_set:
+                                if model_name not in top_models_set:
                                     model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
                                     model_to_future_time[model_name] = None
                                     continue
@@ -501,7 +491,7 @@ try:
                     model_to_future_time = {k: None for k in model_to_future.keys()}
                 for idx, res in enumerate(results):
                     model_name = res.get("name")
-                    if idx in top_index_set:
+                    if model_name in top_models_set:
                         res["future_df"] = model_to_future.get(model_name, pd.DataFrame({"ds": [], "yhat": []}))
                         res["predict_future_time_s"] = model_to_future_time.get(model_name, None)
                     else:
@@ -510,12 +500,22 @@ try:
 
             # Table will render below the plot
 
+            # Use the new average-based accuracy calculation from modeling
+            def _calculate_accuracy_for_plot(r):
+                accuracy_pct = r.get('accuracy_pct', 0.0)
+                if pd.notna(accuracy_pct) and accuracy_pct is not None:
+                    return max(0.0, min(100.0, float(accuracy_pct)))
+                else:
+                    return 0.0
+            
             # Create a compact benchmark table using st.data_editor
             def _fmt(v):
                 try:
                     import math
                     if v is None:
                         return ""
+                    if v == "N/A":
+                        return "N/A"
                     if hasattr(v, 'item'):
                         v = v.item()
                     if isinstance(v, float):
@@ -530,14 +530,14 @@ try:
             for r in results:
                 m = r["name"]
                 test_checked = bool(test_visibility.get(m, m in top_models_set))
-                # Only allow prediction checkbox for top 3 models
+                # Only allow prediction checkbox for top 3 models by RMSE
                 pred_checked = bool(pred_visibility.get(m, False)) if m in top_models_set else False
-                # Simple accuracy calculation from MAPE
-                mape_val = r.get('mape', None)
-                try:
-                    acc_pct = max(0.0, 100.0 - float(mape_val) * 100.0) if pd.notna(mape_val) else None
-                except Exception:
-                    acc_pct = None
+                # Use the new average-based accuracy calculation from modeling
+                accuracy_pct = r.get('accuracy_pct', 0.0)
+                if pd.notna(accuracy_pct) and accuracy_pct is not None:
+                    acc_pct = max(0.0, min(100.0, float(accuracy_pct)))
+                else:
+                    acc_pct = 0.0
                 
                 # Model display name (no extra suffix)
                 model_display = m
@@ -545,7 +545,7 @@ try:
                 show_checked = test_checked or pred_checked
                 
                 # predict_time_s from benchmarks is actually test prediction time, so we'll use it for Test (s)
-                # For future prediction time, show the measured seconds for top-3 models
+                # For future prediction time, show the measured seconds for top-3 models by accuracy
                 future_predict_time = r.get("predict_future_time_s", None) if m in top_models_set else ""
                 
                 table_data.append({
@@ -555,7 +555,7 @@ try:
                     "Accuracy (%)": _fmt(acc_pct),
                     "Train (s)": _fmt(r.get('train_time_s', None)),
                     "Test (s)": _fmt(r.get('predict_time_s', None)),  # Time to predict on test data during benchmarking
-                    "Predict (s)": _fmt(future_predict_time)  # Time to predict future values (only for top 3 models)
+                    "Predict (s)": _fmt(future_predict_time)  # Time to predict future values (only for top 3 models by RMSE)
                 })
 
             results_df = pd.DataFrame(table_data)
@@ -582,7 +582,7 @@ try:
                         ),
                         "Accuracy (%)": st.column_config.TextColumn(
                             "Accuracy (%)",
-                            help="Approximate accuracy from sMAPE (or MAPE fallback). Info only.",
+                            help="Accuracy based on mean absolute error relative to test dataset range. 99% means predictions are off by 1% of the test dataset value range.",
                             disabled=True,
                         ),
                         "Train (s)": st.column_config.TextColumn(
@@ -594,14 +594,14 @@ try:
                             help="Time to predict on test data during benchmarking",
                             disabled=True,
                         ),
-                        "Predict (s)": st.column_config.TextColumn(
-                            "Predict (s)",
-                            help="Time to predict future values (only computed for top 3 models)",
-                            disabled=True,
-                        ),
+                                            "Predict (s)": st.column_config.TextColumn(
+                        "Predict (s)",
+                        help="Time to predict future values (only computed for top 3 models by RMSE)",
+                        disabled=True,
+                    ),
                     }
                     
-                    # For models not in top 3, disable the prediction checkbox by making it read-only
+                    # For models not in top 3 by accuracy, disable the prediction checkbox by making it read-only
                     # We'll handle this in the processing logic instead of using disabled parameter
                     edited_df = st.data_editor(
                         results_df,
@@ -617,7 +617,7 @@ try:
                             {
                                 "Model": (n := r.get("name", "")),
                                 "ShortName": str(n).split(" ")[0],
-                                "Accuracy (%)": (max(0.0, 100.0 - float(r.get("mape")) * 100.0) if pd.notna(r.get("mape")) else None),
+                                "Accuracy (%)": _calculate_accuracy_for_plot(r),
                                 "Time (s)": float(r.get("train_time_s", 0.0) or 0.0) + float(r.get("predict_time_s", 0.0) or 0.0),
                                 "Top3": n in top_models_set,
                             }
@@ -667,11 +667,11 @@ try:
                 # Simple logic: if checked, show both test and predictions (if available)
                 test_visibility[model_name] = show_checked
                 
-                # Only show predictions for top 3 models, and only if checked
+                # Only show predictions for top 3 models by RMSE, and only if checked
                 if model_name in top_models_set:
                     pred_visibility[model_name] = show_checked
                 else:
-                    # Non-top-3 models never show predictions
+                    # Non-top-3 models by RMSE never show predictions
                     pred_visibility[model_name] = False
 
             st.session_state["test_visibility"] = test_visibility
@@ -714,7 +714,7 @@ try:
                             model_to_future_time = {}
                             for res in results:
                                 model_name = res.get("name")
-                                # Restrict future predictions to top unique models only
+                                # Restrict future predictions to top 3 models by RMSE only
                                 if model_name not in top_models_set:
                                     model_to_future[model_name] = pd.DataFrame({"ds": [], "yhat": []})
                                     model_to_future_time[model_name] = None

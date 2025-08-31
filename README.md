@@ -16,9 +16,9 @@ python -m pip install -r requirements.txt
 ```bash
 streamlit run streamlit_app.py
 ```
-If `streamlit` isn’t on PATH, use:
+If `streamlit` isn't on PATH, use:
 ```powershell
-.\venv\Scripts\python.exe -m streamlit run streamlit_app.py
+.\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
 ### Data

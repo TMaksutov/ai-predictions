@@ -41,13 +41,24 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         visible_series["ds"] = visible_series["ds"].dt.normalize()
     except Exception:
         pass
+    
+    # Check if there are any future predictions to determine if we need connection points
+    has_any_future = (future_df is not None and not future_df.empty) or any(
+        (res.get("future_df") is not None and not res.get("future_df").empty) 
+        for res in results
+    )
+    
     if show_only_test and split_ds is not None:
-        # Include the last training point to avoid gaps with predictions
         test_data = series[series["ds"] >= split_ds]
-        last_train_point = series[series["ds"] < split_ds].tail(1)
-        if not last_train_point.empty:
-            visible_series = pd.concat([last_train_point, test_data], ignore_index=True)
+        # Only include the last training point if there are future predictions to connect to
+        if has_any_future:
+            last_train_point = series[series["ds"] < split_ds].tail(1)
+            if not last_train_point.empty:
+                visible_series = pd.concat([last_train_point, test_data], ignore_index=True)
+            else:
+                visible_series = test_data
         else:
+            # No future predictions, so no need for connection points
             visible_series = test_data
 
     # Calculate fixed y-axis limits based on actuals and visible model predictions
@@ -141,8 +152,9 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
 
         label = res['name']
 
-        # Prepend the last actual point to avoid visual gap
-        if not forecast_df.empty:
+        # Only create connection point if we have actual forecast data to connect to
+        # and if there are future predictions that would benefit from the connection
+        if has_any_future and not forecast_df.empty:
             # Use visible_series to ensure consistent connection points
             last_visible_for_forecast = visible_series.sort_values("ds").tail(1)
             if not last_visible_for_forecast.empty:
@@ -155,6 +167,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             else:
                 plot_df = forecast_df
         else:
+            # No future predictions or no forecast data, so no need for connection points
             plot_df = forecast_df
 
         ax.plot(
