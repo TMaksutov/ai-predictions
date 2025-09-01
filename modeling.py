@@ -74,7 +74,7 @@ def _seed_default_models_if_empty() -> None:
     register_model("ElasticNet (alpha=0.01, l1=0.7)", lambda: Pipeline([("scaler", StandardScaler()), ("model", ElasticNet(alpha=0.01, l1_ratio=0.7, max_iter=20000, tol=1e-4))]))
     register_model("BayesianRidge", lambda: BayesianRidge(alpha_1=1e-6, alpha_2=1e-6))
     # Neighbors
-    register_model("KNN (n_neighbors=7)", lambda: KNeighborsRegressor(n_neighbors=7))
+    register_model("KNN (n_neighbors=5", lambda: KNeighborsRegressor(n_neighbors=5))
     # Trees / ensembles (trim heavy variants)
     register_model("GB (n_estimators=100)", lambda: GradientBoostingRegressor(random_state=42, n_estimators=100, max_depth=3))
     # Robust linear

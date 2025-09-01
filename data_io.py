@@ -241,74 +241,86 @@ def load_data_with_checklist(file_obj_or_path, progress_callback=None):
         
         # Duplicate checking removed per user request
         
-        # Check date format - reject month-first numeric formats (MM/DD/YY, MM-DD-YY, MM.DD.YY), only allow day-first formats
-        first_col = df.columns[0]
-        date_sample = df[first_col].dropna().head(10).astype(str).tolist()
-        
-        if date_sample:
-            # Check for MM/DD/YY patterns that we want to reject
-            import re
-            rejected_patterns = [
-                r'^\d{1,2}/\d{1,2}/\d{2,4}$',  # MM/DD/YY or MM/DD/YYYY
-                r'^\d{1,2}-\d{1,2}-\d{2,4}$',  # MM-DD-YY or MM-DD-YYYY
-                r'^\d{1,2}\.\d{1,2}\.\d{2,4}$',  # MM.DD.YY or MM.DD.YYYY
-            ]
-            
-            has_rejected_format = False
-            for sample_date in date_sample[:5]:  # Check first 5 samples
-                for pattern in rejected_patterns:
-                    if re.match(pattern, sample_date.strip()):
-                        # Additional check: if first number > 12, it's likely day-first (allowed)
-                        parts = re.split(r'[./-]', sample_date.strip())
-                        if len(parts) >= 2:
-                            try:
-                                first_num = int(parts[0])
-                                if first_num <= 12:  # Could be month-first format (rejected)
-                                    has_rejected_format = True
-                                    break
-                            except ValueError:
-                                pass
-                if has_rejected_format:
-                    break
-            
-            if has_rejected_format:
-                add_check("error", "Date format appears to be month-first (e.g., MM/DD/YYYY, MM-DD-YYYY, or MM.DD.YYYY). Please use day-first formats like DD/MM/YYYY or YYYY-MM-DD")
-                return early_return_error("Date format must be day-first (DD/MM/YYYY) or ISO format (YYYY-MM-DD), not month-first numeric formats")
-            else:
-                add_check("ok", "Date format validation passed")
-
-        # Check consecutive daily dates and detect date format
+        # Smart date format detection by testing different patterns and checking for consecutive dates
         detected_date_format = None
+        dates = None  # Initialize dates variable outside the loop
         if len(df) > 1:
             try:
                 date_col = df.columns[0]
                 sample_date = str(df[date_col].iloc[0]).strip()
-                if '-' in sample_date and len(sample_date.split('-')[0]) == 4:
-                    dates = pd.to_datetime(df[date_col], errors='coerce', format='%Y-%m-%d')
-                    detected_date_format = '%Y-%m-%d'
-                else:
-                    dates = pd.to_datetime(df[date_col], errors='coerce', dayfirst=True)
-                    # Try to determine specific format for day-first dates
-                    if '.' in sample_date:
-                        detected_date_format = '%d.%m.%Y'
-                    elif '/' in sample_date:
-                        detected_date_format = '%d/%m/%Y'
-                    elif '-' in sample_date:
-                        detected_date_format = '%d-%m-%Y'
                 
-                if dates.isna().any():
-                    num_unparsed = int(dates.isna().sum())
-                    add_check("warning", f"Some dates could not be parsed for consecutive check (unparsed: {num_unparsed})")
-                else:
-                    # Check differences between consecutive rows (assume data is already in order)
-                    date_diffs = dates.diff()[1:]  # Skip first NaT
-                    one_day = pd.Timedelta(days=1)
-                    
-                    if not (date_diffs == one_day).all():
-                        add_check("error", "Dates are not consecutive daily")
-                        return early_return_error("Dataset must have consecutive daily dates with no missing days")
-                    else:
-                        add_check("ok", "All dates are consecutive (1 day apart)")
+                # Define date patterns to test
+                date_patterns = [
+                    ('%d/%m/%Y', 'DD/MM/YYYY'),
+                    ('%d-%m-%Y', 'DD-MM-YYYY'),
+                    ('%d.%m.%Y', 'DD.MM.YYYY'),
+                    ('%m/%d/%Y', 'MM/DD/YYYY'),
+                    ('%m-%d-%Y', 'MM-DD-YYYY'),
+                    ('%m.%d.%Y', 'MM.DD.YYYY'),
+                    ('%Y-%m-%d', 'YYYY-MM-DD'),
+                    ('%Y/%m/%d', 'YYYY/MM/DD'),
+                    ('%Y.%m.%d', 'YYYY.MM.DD'),
+                    ('%d/%m/%y', 'DD/MM/YY'),
+                    ('%d-%m-%y', 'DD-MM-YY'),
+                    ('%d.%m.%y', 'DD.MM.YY'),
+                    ('%m/%d/%y', 'MM/DD/YY'),
+                    ('%m-%d-%y', 'MM-DD-YY'),
+                    ('%m.%d.%y', 'MM.DD.YY'),
+                    ('%y-%m-%d', 'YY-MM-DD'),
+                    ('%y/%m/%d', 'YY/MM/DD'),
+                    ('%y.%m.%d', 'YY.MM.DD'),
+                    ('%d %m %Y', 'DD MM YYYY'),
+                    ('%m %d %Y', 'MM DD YYYY'),
+                    ('%Y %m %d', 'YYYY MM DD'),
+                    ('%d %m %y', 'DD MM YY'),
+                    ('%m %d %y', 'MM DD YY'),
+                    ('%y %m %d', 'YY MM DD'),
+                    ('%d %B %Y', 'DD Month YYYY'),
+                    ('%B %d %Y', 'Month DD YYYY'),
+                    ('%d %b %Y', 'DD Mon YYYY'),
+                    ('%b %d %Y', 'Mon DD YYYY'),
+                    ('%Y %B %d', 'YYYY Month DD'),
+                    ('%Y %b %d', 'YYYY Mon DD'),
+                    ('%d/%B/%Y', 'DD/Month/YYYY'),
+                    ('%B/%d/%Y', 'Month/DD/YYYY'),
+                    ('%d-%B-%Y', 'DD-Month-YYYY'),
+                    ('%B-%d-%Y', 'Month-DD-YYYY'),
+                    ('%d.%B.%Y', 'DD.Month.YYYY'),
+                    ('%B.%d.%Y', 'Month.DD.YYYY'),
+                    ('%d/%b/%Y', 'DD/Mon/YYYY'),
+                    ('%b/%d/%Y', 'Mon/DD/YYYY'),
+                    ('%d-%b-%Y', 'DD-Mon-YYYY'),
+                    ('%b-%d-%Y', 'Mon-DD-YYYY'),
+                    ('%d.%b.%Y', 'DD.Mon.YYYY'),
+                    ('%b.%d.%Y', 'Mon.DD.YYYY')
+                ]
+                
+                # Test each pattern to find one that gives consecutive daily dates
+                for pattern, description in date_patterns:
+                    try:
+                        # Parse dates with current pattern
+                        dates = pd.to_datetime(df[date_col], format=pattern, errors='coerce')
+                        
+                        # Check if all dates parsed successfully
+                        if not dates.isna().any():
+                            # Check if dates are consecutive (1 day apart)
+                            date_diffs = dates.diff()[1:]  # Skip first NaT
+                            one_day = pd.Timedelta(days=1)
+                            
+                            if (date_diffs == one_day).all():
+                                detected_date_format = '%Y-%m-%d'  # Update to reflect the standardized format
+                                add_check("ok", f"Date format detected: {description}")
+                                
+                                # Convert dates to YYYY-MM-DD format as datetime objects (not strings)
+                                # This ensures consistent format while keeping them as datetime for downstream processing
+                                df[date_col] = dates
+                                break
+                    except Exception:
+                        continue
+                
+                if not detected_date_format:
+                    add_check("error", "Could not detect valid date format that gives consecutive daily dates")
+                    return early_return_error("Date format could not be determined. Please ensure dates are in DD/MM/YYYY, MM/DD/YYYY, or YYYY-MM-DD format with consecutive daily values")
                         
             except Exception as e:
                 add_check("warning", f"Could not validate consecutive dates: {str(e)}")
@@ -322,7 +334,7 @@ def load_data_with_checklist(file_obj_or_path, progress_callback=None):
             "detected_date_format": detected_date_format,
             "delimiter_used": locals().get('detected_delimiter') if 'detected_delimiter' in locals() else None,
             "encoding_used": locals().get('detected_encoding') if 'detected_encoding' in locals() else None,
-            "num_unparsed_dates": int(dates.isna().sum()) if 'dates' in locals() else None,
+            "num_unparsed_dates": int(dates.isna().sum()) if dates is not None else None,
             "n_missing_target": int(df[df.columns[-1]].isnull().sum()) if df.shape[1] > 0 else None
         })
         

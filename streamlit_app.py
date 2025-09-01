@@ -169,7 +169,11 @@ try:
     detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
     if not pd.api.types.is_datetime64_any_dtype(series["ds"]):
         if detected_fmt:
-            series["ds"] = pd.to_datetime(series["ds"], errors="coerce", format=str(detected_fmt))
+            # If detected_fmt is %Y-%m-%d, dates should already be in this format
+            if detected_fmt == '%Y-%m-%d':
+                series["ds"] = pd.to_datetime(series["ds"], errors="coerce")
+            else:
+                series["ds"] = pd.to_datetime(series["ds"], errors="coerce", format=str(detected_fmt))
         else:
             series["ds"] = pd.to_datetime(series["ds"], errors="coerce", dayfirst=True)
     series["ds"] = series["ds"].dt.normalize()
@@ -856,7 +860,11 @@ try:
                         # Use detected date format if available to avoid re-parsing ambiguities
                         detected_fmt = file_info.get("detected_date_format") if isinstance(file_info, dict) else None
                         if detected_fmt:
-                            ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", format=str(detected_fmt)).dt.normalize()
+                            # If detected_fmt is %Y-%m-%d, dates should already be in this format
+                            if detected_fmt == '%Y-%m-%d':
+                                ds_norm = pd.to_datetime(download_df[time_col], errors="coerce").dt.normalize()
+                            else:
+                                ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", format=str(detected_fmt)).dt.normalize()
                         else:
                             ds_norm = pd.to_datetime(download_df[time_col], errors="coerce", dayfirst=True).dt.normalize()
                         download_df[pred_col] = ds_norm.map(pred_map)

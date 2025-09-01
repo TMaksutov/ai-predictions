@@ -38,8 +38,15 @@ def prepare_series_from_dataframe(raw_df: pd.DataFrame, file_info: dict):
     # Parse dates robustly without popping columns from the working frame
     ds_parsed = None
     try:
-        if detected_fmt:
-            ds_parsed = pd.to_datetime(date_values, errors="coerce", format=str(detected_fmt))
+        # Check if dates are already datetime objects (from data_io.py processing)
+        if pd.api.types.is_datetime64_any_dtype(date_values):
+            ds_parsed = date_values
+        elif detected_fmt:
+            # If detected_fmt is %Y-%m-%d, dates should already be in this format
+            if detected_fmt == '%Y-%m-%d':
+                ds_parsed = pd.to_datetime(date_values, errors="coerce")
+            else:
+                ds_parsed = pd.to_datetime(date_values, errors="coerce", format=str(detected_fmt))
         else:
             # Fast mixed parser first, then day-first heuristic, then generic
             try:
@@ -86,10 +93,18 @@ def prepare_series_from_dataframe(raw_df: pd.DataFrame, file_info: dict):
 
     series = series.sort_values("ds").reset_index(drop=True)
 
+    # Count trailing missing values (prediction data)
+    trailing_missing_count = 0
+    if not series.empty:
+        y_notna = series["y"].notna()
+        if y_notna.any():
+            last_observed_idx = y_notna[y_notna].index.max()
+            trailing_missing_count = len(series) - last_observed_idx - 1
+    
     load_meta = {
         "original_time_col": first,
         "original_target_col": last,
-        "trailing_missing_count": 0,
+        "trailing_missing_count": trailing_missing_count,
         "last_known_ds": series["ds"].max() if not series.empty else None,
         "future_rows_raw": pd.DataFrame(),
     }
