@@ -20,6 +20,7 @@ import uuid
 import json
 import os
 import time
+import zipfile
 from urllib import request
 import warnings
 from sklearn.exceptions import ConvergenceWarning
@@ -136,6 +137,31 @@ st.sidebar.caption("This app collects  upload counts only. No personal data.")
 
 
 
+
+# Download Templates button (always visible, before checklist)
+# Create a zip file with sample datasets
+zip_buffer = io.BytesIO()
+with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+    sample_files = [
+        "sample_datasets/dataset_1_no_features.csv",
+        "sample_datasets/dataset_2_one_feature.csv",
+        "sample_datasets/dataset_3_two_features.csv",
+        "sample_datasets/dataset_4_three_features.csv",
+        "sample_datasets/dataset_5_retail_scenario.csv"
+    ]
+    
+    for file_path in sample_files:
+        if os.path.exists(file_path):
+            zip_file.write(file_path, os.path.basename(file_path))
+
+zip_buffer.seek(0)
+
+st.sidebar.download_button(
+    label="Download Templates",
+    data=zip_buffer.getvalue(),
+    file_name="sample_datasets.zip",
+    mime="application/zip",
+)
 
 # Sidebar checklist
 progress_container = st.sidebar.container()
@@ -838,8 +864,12 @@ try:
         # Checklist is already rendered progressively during validation
         # No need to render again here
 
-        # Offer CSV download with predicted target (after checklist, before settings)
-        # Only show download when we have future predictions
+        # Show Result section with download buttons (always visible)
+
+        
+        st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
+
+        # Offer CSV download with predicted target (only when we have future predictions)
         if has_future_predictions:
             try:
                 best_future_df = None
@@ -891,7 +921,7 @@ try:
                             except Exception:
                                 pass
                     out_name = f"{Path(data_source_name).stem}_with_predictions.csv"
-                    st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 6px 0; text-align:center'>Result</div>", unsafe_allow_html=True)
+                    
                     st.sidebar.download_button(
                         label="Download CSV with predictions",
                         data=download_df.to_csv(index=False).encode("utf-8"),
