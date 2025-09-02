@@ -106,6 +106,8 @@ def _ga_track(event_name, params=None):
 # UI
 # -----------------------------
 
+
+
 # Sidebar header
 st.sidebar.markdown("<div style='font-weight:600; margin:6px 0 12px 0; text-align:center; font-size:18px'>Upload Daily Data</div>", unsafe_allow_html=True)
 
@@ -193,10 +195,18 @@ if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
     raw_df, file_info = load_data_with_checklist(uploaded, progress_callback=update_checklist_callback)
     
+    # Track page loads when sample data is successfully loaded (not user uploads)
+    try:
+        is_real_upload = st.session_state.get("user_uploaded_file", False)
+        if not is_real_upload and not st.session_state.get("ga_page_loaded_once", False):
+            _ga_track("page_loaded")
+            st.session_state["ga_page_loaded_once"] = True
+    except Exception:
+        pass
+    
     # Track only actual file uploads via browse button, not auto-loaded sample files
     try:
         # Check if this is a real user upload (not the auto-loaded sample)
-        is_real_upload = st.session_state.get("user_uploaded_file", False)
         if is_real_upload and not st.session_state.get("ga_uploaded_once", False):
             _ga_track("file_uploaded")
             st.session_state["ga_uploaded_once"] = True
@@ -318,7 +328,7 @@ try:
             try:
                 is_real_upload = st.session_state.get("user_uploaded_file", False)
                 if is_real_upload and not st.session_state.get("ga_validation_success_once", False):
-                    _ga_track("file_validation_success")
+                    _ga_track("file_validated")
                     st.session_state["ga_validation_success_once"] = True
             except Exception:
                 pass
