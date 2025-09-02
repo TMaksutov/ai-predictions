@@ -117,6 +117,19 @@ uploaded = st.sidebar.file_uploader(
     help="If no file is uploaded, the default dataset 'sample.csv' will be used. Maximum file size: 1MB; maximum rows: 10,000"
 )
 
+# Track if user actually uploaded a file (not auto-loaded sample)
+if uploaded is not None:
+    # Check if this is a new upload (different from what was previously loaded)
+    current_file_key = f"{getattr(uploaded, 'name', 'unknown')}_{getattr(uploaded, 'size', 0)}"
+    if current_file_key != st.session_state.get("last_uploaded_file_key"):
+        st.session_state["user_uploaded_file"] = True
+        st.session_state["last_uploaded_file_key"] = current_file_key
+    else:
+        # Same file as before, don't mark as new upload
+        st.session_state["user_uploaded_file"] = False
+else:
+    st.session_state["user_uploaded_file"] = False
+
 # Auto-load sample as a pseudo-upload on first load so it follows the same path
 if uploaded is None:
     try:
@@ -126,6 +139,8 @@ if uploaded is None:
         _auto_file.name = SAMPLE_PATH.name
         _auto_file.size = len(_sample_bytes)
         uploaded = _auto_file
+        # Mark this as auto-loaded sample, not a user upload
+        st.session_state["user_uploaded_file"] = False
     except Exception:
         pass
 
@@ -177,9 +192,12 @@ def update_checklist_callback(checklist_items):
 if uploaded is not None:
     data_source_name = getattr(uploaded, "name", "uploaded.csv")
     raw_df, file_info = load_data_with_checklist(uploaded, progress_callback=update_checklist_callback)
-    # Count a single upload event per user session; no PII sent
+    
+    # Track only actual file uploads via browse button, not auto-loaded sample files
     try:
-        if not st.session_state.get("ga_uploaded_once", False):
+        # Check if this is a real user upload (not the auto-loaded sample)
+        is_real_upload = st.session_state.get("user_uploaded_file", False)
+        if is_real_upload and not st.session_state.get("ga_uploaded_once", False):
             _ga_track("file_uploaded")
             st.session_state["ga_uploaded_once"] = True
     except Exception:
@@ -272,11 +290,8 @@ try:
 
         # Benchmark only on known rows
         series_for_benchmark = series.iloc[: last_observed_idx + 1].dropna(subset=["y"]).copy()
-        # Import config for default values
-        try:
-            from config import DEFAULT_TEST_FRACTION
-        except ImportError:
-            DEFAULT_TEST_FRACTION = 0.2
+        # Default test fraction
+        DEFAULT_TEST_FRACTION = 0.2
 
         # Compute trend description early for use throughout the function
         _trend_desc = None
@@ -298,6 +313,16 @@ try:
         try:
             trainer = UnifiedTimeSeriesTrainer()
             results = trainer.benchmark_models(series_for_benchmark, test_fraction=DEFAULT_TEST_FRACTION)
+            
+            # Track successful file validation and model training (only for user uploads)
+            try:
+                is_real_upload = st.session_state.get("user_uploaded_file", False)
+                if is_real_upload and not st.session_state.get("ga_validation_success_once", False):
+                    _ga_track("file_validation_success")
+                    st.session_state["ga_validation_success_once"] = True
+            except Exception:
+                pass
+                
         except Exception as e:
             results = []
             st.error(f"Benchmark failed: {e}")

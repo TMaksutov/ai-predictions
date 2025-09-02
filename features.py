@@ -4,28 +4,15 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer
 
-# Import configuration
-try:
-    from config import (
-        LAG_PERIODS,
-        MOVING_AVERAGE_WINDOWS,
-        FOURIER_PERIODS,
-        FOURIER_HARMONICS,
-        AUTO_DETECT_FOURIER,
-        AUTO_MAX_PERIOD,
-        AUTO_TOP_N,
-        AUTO_MIN_CYCLES,
-    )
-except ImportError:
-    # Fallback values if config not available
-    LAG_PERIODS = [1, 7, 30, 90, 365]
-    MOVING_AVERAGE_WINDOWS = [7, 30, 90]
-    FOURIER_PERIODS = [7, 30, 365]
-    FOURIER_HARMONICS = 3
-    AUTO_DETECT_FOURIER = True
-    AUTO_MAX_PERIOD = 400
-    AUTO_TOP_N = 3
-    AUTO_MIN_CYCLES = 3
+# Configuration values
+LAG_PERIODS = [1, 7, 30, 90, 365]
+MOVING_AVERAGE_WINDOWS = [7, 30, 90]
+FOURIER_PERIODS = [7, 30, 365]
+FOURIER_HARMONICS = 3
+AUTO_DETECT_FOURIER = True
+AUTO_MAX_PERIOD = 400
+AUTO_TOP_N = 3
+AUTO_MIN_CYCLES = 3
 
 def detect_seasonal_periods(y: np.ndarray, max_period: int = 400, top_n: int = 3, min_cycles: int = 3) -> List[int]:
     """

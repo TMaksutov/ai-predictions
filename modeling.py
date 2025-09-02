@@ -31,13 +31,9 @@ from features import (
 )
 from trend import fit_trend
 
-# Import configuration
-try:
-    from config import DEFAULT_TEST_FRACTION, MIN_TRAINING_ROWS
-except ImportError:
-    # Fallback values
-    DEFAULT_TEST_FRACTION = 0.2
-    MIN_TRAINING_ROWS = 10
+# Configuration values
+DEFAULT_TEST_FRACTION = 0.2
+MIN_TRAINING_ROWS = 10
 from typing import Callable
 
 # -----------------------------
