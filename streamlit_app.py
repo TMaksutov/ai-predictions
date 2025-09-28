@@ -891,7 +891,7 @@ try:
             trend_series=trend_df_plot,
         )
         with plot_container:
-            st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig)
         # Training data preview removed per request
 
         # Results table rendered below with per-model checkboxes
