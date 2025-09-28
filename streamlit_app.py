@@ -43,6 +43,13 @@ st.markdown(
         header[data-testid="stHeader"] { height: 20px; }
         [data-testid="stSidebar"] { min-width: 450px; max-width: 450px; }
         [data-testid="stSidebar"] > div:first-child { min-width: 450px; max-width: 450px; }
+        /* Ensure matplotlib figure has space on first render */
+        [data-testid="stPyplot"] img,
+        [data-testid="stPyplot"] canvas {
+            width: 100% !important;
+            height: auto !important;
+            min-height: 260px;
+        }
     </style>
     """,
     unsafe_allow_html=True,
