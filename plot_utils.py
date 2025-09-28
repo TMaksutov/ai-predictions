@@ -22,7 +22,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         visible_test_models: Models to show test performance for
         visible_pred_models: Models to show predictions for
     """
-    fig, ax = plt.subplots(figsize=(16, 8))
+    fig, ax = plt.subplots(figsize=(24, 10))
     
     # Handle backward compatibility
     if visible_test_models is None and visible_pred_models is None and visible_models is not None:
@@ -130,7 +130,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             name_to_color[name] = default_colors[idx % len(default_colors)]
 
     # Plot actual values
-    ax.plot(visible_series["ds"], visible_series["y"], linewidth=3, alpha=0.85,
+    ax.plot(visible_series["ds"], visible_series["y"], linewidth=2, alpha=0.85,
             color="#222", label="Actual")
 
     # Plot each model's test forecast
@@ -173,7 +173,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         ax.plot(
             plot_df["ds"], plot_df["yhat"],
             linestyle="--",
-            linewidth=2.5,
+            linewidth=1.8,
             color=name_to_color.get(label, None),
             label=label,
         )
@@ -194,7 +194,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
                     ts = ts[ts["ds"] <= pd.to_datetime(x_max_date)].reset_index(drop=True)
             except Exception:
                 pass
-            ax.plot(ts["ds"], ts["trend"], color="#555", linewidth=3.0, alpha=0.7, label="Trend")
+            ax.plot(ts["ds"], ts["trend"], color="#555", linewidth=2.0, alpha=0.7, label="Trend")
     except Exception:
         pass
 
@@ -232,7 +232,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
             ax.plot(
                 f_plot["ds"], f_plot["yhat"],
                 linestyle="-",
-                linewidth=(3.5 if is_best else 2.8),
+                linewidth=(2.2 if is_best else 1.8),
                 color=name_to_color.get(res["name"], None),
                 label=None,  # avoid duplicate legend entries; keep legend from forecast lines
             )
@@ -257,7 +257,7 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
         best_color = name_to_color.get(best_name, None)
         ax.plot(
             future_plot_df["ds"], future_plot_df["yhat"],
-            linestyle="-", linewidth=3.5, color=best_color, label=None
+            linestyle="-", linewidth=2.2, color=best_color, label=None
         )
 
     # Add vertical line for train/test split
@@ -268,11 +268,10 @@ def create_forecast_plot(series: pd.DataFrame, results: list, future_df: pd.Data
     ax.set_ylim(y_min, y_max)
 
     # Styling
-    ax.set_xlabel("Date", fontsize=14)
-    ax.set_ylabel("Value", fontsize=14)
-    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=12, frameon=False)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Value")
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=10, frameon=False)
     ax.grid(alpha=0.3)
-    ax.tick_params(axis='both', which='major', labelsize=12)
     fig.tight_layout(rect=(0, 0, 0.85, 1))
 
     return fig

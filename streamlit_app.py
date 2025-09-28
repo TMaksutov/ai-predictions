@@ -43,6 +43,14 @@ st.markdown(
         header[data-testid="stHeader"] { height: 20px; }
         [data-testid="stSidebar"] { min-width: 450px; max-width: 450px; }
         [data-testid="stSidebar"] > div:first-child { min-width: 450px; max-width: 450px; }
+        /* Make plot container larger */
+        [data-testid="stVerticalBlock"] { gap: 1rem; }
+        /* Ensure plots take full width */
+        .element-container img { max-width: 100% !important; }
+        .element-container canvas { max-width: 100% !important; }
+        /* Make plot containers use full available width */
+        .stColumns { width: 100% !important; }
+        .stColumn { width: 100% !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -367,6 +375,9 @@ try:
         # Placeholders to control layout order: plot above, table below
         plot_container = st.container()
         table_container = st.container()
+
+        # Create full-width columns for better layout
+        plot_col, = st.columns([1])
         # Compute top 3 models by RMSE (lower is better)
         try:
             # Sort by RMSE in ascending order (lowest RMSE first)
@@ -890,8 +901,9 @@ try:
             visible_pred_models=pred_selected_models,
             trend_series=trend_df_plot,
         )
-        with plot_container:
-            st.pyplot(fig)
+        with plot_col:
+            # Use full container width and larger DPI for better quality
+            st.pyplot(fig, use_container_width=True, dpi=100)
         # Training data preview removed per request
 
         # Results table rendered below with per-model checkboxes
