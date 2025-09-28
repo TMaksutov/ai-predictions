@@ -43,9 +43,6 @@ st.markdown(
         header[data-testid="stHeader"] { height: 20px; }
         [data-testid="stSidebar"] { min-width: 450px; max-width: 450px; }
         [data-testid="stSidebar"] > div:first-child { min-width: 450px; max-width: 450px; }
-        /* Ensure matplotlib figures occupy container width and have a reasonable minimum height */
-        [data-testid="stPyplot"] { min-height: 380px; }
-        [data-testid="stPyplot"] img { width: 100% !important; height: auto !important; }
     </style>
     """,
     unsafe_allow_html=True,
